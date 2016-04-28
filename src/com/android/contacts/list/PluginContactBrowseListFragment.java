@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010 The Android Open Source Project
+ * Copyright (C) 2016 The CyanogenMod Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,8 @@ import com.android.contacts.common.list.ContactListItemView;
 import com.android.contacts.common.list.DefaultContactListAdapter;
 import com.android.contacts.common.list.ProfileAndContactsLoader;
 import com.android.contacts.incall.InCallPluginUtils;
-import com.android.phone.common.incall.CallMethodUtils;
+import com.android.phone.common.incall.utils.CallMethodUtils;
+
 import java.util.List;
 
 public class PluginContactBrowseListFragment extends ContactEntryListFragment<ContactListAdapter>

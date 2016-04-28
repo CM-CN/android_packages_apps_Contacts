@@ -58,15 +58,12 @@ public class InCallPluginInfo implements Parcelable {
         mCallMethodInfo.mStatus = in.readInt();
         mCallMethodInfo.mDefaultDirectorySearchIntent = in.readParcelable(PendingIntent.class
                 .getClassLoader());
-        mCallMethodInfo.mDirectorySearchIntent =
-                in.readParcelable(PendingIntent.class.getClassLoader());
         mCallMethodInfo.mLoginIntent = in.readParcelable(PendingIntent.class.getClassLoader());
         mCallMethodInfo.mName = in.readString();
         mCallMethodInfo.mBrandIconId = in.readInt();
         mCallMethodInfo.mLoginIconId = in.readInt();
         mTabTag = in.readString();
         mCallMethodInfo.mComponent = in.readParcelable(ComponentName.class.getClassLoader());
-        mCallMethodInfo.mNudgeComponent = in.readParcelable(ComponentName.class.getClassLoader());
         mCallMethodInfo.mDependentPackage = in.readString();
         mCallMethodInfo.mMimeType = in.readString();
         mCallMethodInfo.mImMimeType = in.readString();
@@ -79,14 +76,12 @@ public class InCallPluginInfo implements Parcelable {
         dest.writeInt(mCallMethodInfo.mIsAuthenticated ? 1 : 0);
         dest.writeInt(mCallMethodInfo.mStatus);
         dest.writeParcelable(mCallMethodInfo.mDefaultDirectorySearchIntent, flags);
-        dest.writeParcelable(mCallMethodInfo.mDirectorySearchIntent, flags);
         dest.writeParcelable(mCallMethodInfo.mLoginIntent, flags);
         dest.writeString(mCallMethodInfo.mName);
         dest.writeInt(mCallMethodInfo.mBrandIconId);
         dest.writeInt(mCallMethodInfo.mLoginIconId);
         dest.writeString(mTabTag);
         dest.writeParcelable(mCallMethodInfo.mComponent, flags);
-        dest.writeParcelable(mCallMethodInfo.mNudgeComponent, flags);
         dest.writeString(mCallMethodInfo.mDependentPackage);
         dest.writeString(mCallMethodInfo.mMimeType);
         dest.writeString(mCallMethodInfo.mImMimeType);

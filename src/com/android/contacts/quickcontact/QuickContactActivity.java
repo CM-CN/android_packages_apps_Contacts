@@ -53,7 +53,6 @@ import android.preference.PreferenceManager;
 import android.provider.CalendarContract;
 import android.os.Handler;
 import android.os.Message;
-import android.provider.ContactsContract;
 import android.provider.ContactsContract.CommonDataKinds.Email;
 import android.provider.ContactsContract.CommonDataKinds.Event;
 import android.provider.ContactsContract.CommonDataKinds.GroupMembership;
@@ -153,7 +152,6 @@ import com.android.contacts.detail.ContactDisplayUtils;
 import com.android.contacts.editor.ContactEditorFragment;
 import com.android.contacts.editor.EditorIntents;
 import com.android.contacts.incall.InCallMetricsHelper;
-import com.android.contacts.incall.InCallPluginHelper;
 import com.android.contacts.incall.InCallPluginUtils;
 import com.android.contacts.interactions.CalendarInteractionsLoader;
 import com.android.contacts.interactions.CallLogInteraction;
@@ -174,9 +172,12 @@ import com.android.contacts.util.StructuredPostalUtils;
 import com.android.contacts.widget.MultiShrinkScroller;
 import com.android.contacts.widget.MultiShrinkScroller.MultiShrinkScrollerListener;
 import com.android.contacts.widget.QuickContactImageView;
-import com.android.phone.common.incall.CallMethodHelper;
+import com.android.phone.common.incall.ContactsDataSubscription;
 import com.android.phone.common.incall.CallMethodInfo;
-import com.android.phone.common.incall.CallMethodUtils;
+import com.android.phone.common.incall.ContactsPendingIntents;
+import com.android.phone.common.incall.utils.CallMethodFilters;
+import com.android.phone.common.incall.utils.CallMethodUtils;
+import com.android.phone.common.incall.utils.MimeTypeUtils;
 import com.cyanogen.ambient.discovery.util.NudgeKey;
 import com.cyanogen.ambient.incall.extension.OriginCodes;
 import com.cyanogen.ambient.plugin.PluginStatus;
@@ -477,8 +478,9 @@ public class QuickContactActivity extends ContactsActivity implements
                     CallMethodInfo cmi = null;
                     if (entryTag.getEntry() == null ||
                             entryTag.getEntry().getCallMethodInfo() == null) {
-                        cmi = InCallPluginHelper.getCallMethod(ComponentName.unflattenFromString(
-                                intent.getStringExtra(InCallPluginUtils.KEY_COMPONENT)));
+                        cmi = ContactsDataSubscription.get(QuickContactActivity.this)
+                                .getPluginIfExists(ComponentName.unflattenFromString(
+                                        intent.getStringExtra(InCallPluginUtils.KEY_COMPONENT)));
                         cmi.placeCall(OriginCodes.CONTACTS_CARD,
                                 intent.getStringExtra(InCallPluginUtils.KEY_NUMBER),
                                 getBaseContext(), false, false,
@@ -1295,11 +1297,12 @@ public class QuickContactActivity extends ContactsActivity implements
     @Override
     protected void onResume() {
         super.onResume();
-        if (InCallPluginHelper.subscribe(CALL_METHOD_SUBSCRIBER_ID, pluginsUpdatedReceiver)) {
-            if (DEBUG) Log.d(TAG, "InCallPluginHelper infoReady");
-            InCallPluginHelper.refreshDynamicItems();
+        if (ContactsDataSubscription.get(this)
+                .subscribe(CALL_METHOD_SUBSCRIBER_ID, pluginsUpdatedReceiver)) {
+            if (DEBUG) Log.d(TAG, "ContactsDataSubscription infoReady");
+            ContactsDataSubscription.get(this).refreshDynamicItems();
         } else {
-            if (DEBUG) Log.d(TAG, "InCallPluginHelper info NOT Ready");
+            if (DEBUG) Log.d(TAG, "ContactsDataSubscription info NOT Ready");
         }
         // If returning from a launched activity, repopulate the contact and about card
         if (mHasIntentLaunched) {
@@ -1320,7 +1323,7 @@ public class QuickContactActivity extends ContactsActivity implements
     protected void onPause() {
         super.onPause();
 
-        InCallPluginHelper.unsubscribe(CALL_METHOD_SUBSCRIBER_ID);
+        ContactsDataSubscription.get(this).unsubscribe(CALL_METHOD_SUBSCRIBER_ID);
     }
 
     private synchronized void populateContactAndAboutCard(Cp2DataCardModel cp2DataCardModel) {
@@ -1505,11 +1508,14 @@ public class QuickContactActivity extends ContactsActivity implements
         final ResolveCache cache = ResolveCache.getInstance(this);
         Set<String> pluginMimeExcluded;
         Set<String> pluginMimeIncluded;
-        if (InCallPluginHelper.infoReady()) {
-            mCallMethodMap = (HashMap<ComponentName, CallMethodInfo>)
-                    InCallPluginHelper.getAllEnabledAndHiddenCallMethods();
-            pluginMimeExcluded = InCallPluginHelper.getAllEnabledVideoImMimeSet();
-            pluginMimeIncluded = InCallPluginHelper.getAllEnabledVoiceMimeSet();
+        if (ContactsDataSubscription.infoReady()) {
+            mCallMethodMap = CallMethodFilters.getAllEnabledAndHiddenCallMethods(
+                    ContactsDataSubscription.get(this));
+            pluginMimeExcluded = MimeTypeUtils.getAllEnabledVideoImMimeSet(
+                    ContactsDataSubscription.get(this));
+            pluginMimeIncluded = MimeTypeUtils.getAllEnabledVoiceMimeSet(
+                    ContactsDataSubscription.get(this));
+
             if (DEBUG) {
                 Log.d(TAG, "plugins size:" + mCallMethodMap.size());
                 Log.d(TAG, "mimeExcluded size:" + pluginMimeExcluded.size());
@@ -1610,7 +1616,7 @@ public class QuickContactActivity extends ContactsActivity implements
                 }
             }
         }
-        if (!mContactData.isUserProfile() && InCallPluginHelper.infoReady() && mCallMethodMap
+        if (!mContactData.isUserProfile() && ContactsDataSubscription.infoReady() && mCallMethodMap
                 .size() > 0) {
             addAllInCallPluginOtherEntries(contactCardEntries, pluginAccountsMap);
         }
@@ -2469,7 +2475,8 @@ public class QuickContactActivity extends ContactsActivity implements
         if (DEBUG) Log.d(TAG, "checkAndBindContactData," + withBlockHelper + " " +
                 onlyStartAsyncTask);
         // Update pending Intents
-        InCallPluginHelper.refreshPendingIntents(InCallPluginUtils.getInCallContactInfo(contact));
+        ContactsDataSubscription.get(this).updatePendingIntents(
+                mIntentMap, InCallPluginUtils.getInCallContactInfo(contact));
 
         if (mIsUpdating.get() && mEntriesAndActionsTask != null && !mEntriesAndActionsTask
                 .isCancelled()) {
@@ -3560,7 +3567,8 @@ public class QuickContactActivity extends ContactsActivity implements
         List<Entry> entries = new ArrayList<Entry>();
         for (DataItem dataItem : dataItems) {
             CallMethodInfo cmi =
-                    InCallPluginHelper.getMethodForMimeType(dataItem.getMimeType(), true);
+                    CallMethodFilters.getMethodForMimeType(dataItem.getMimeType(), true,
+                            ContactsDataSubscription.get(this));
             Entry entry;
             RawContact rawContact = dataItemMap.get(dataItem);
             String contactAccountHandle = rawContact.getSourceId();
@@ -3625,9 +3633,13 @@ public class QuickContactActivity extends ContactsActivity implements
             return;
         }
         CallMethodInfo cmiStored = entry.getCallMethodInfo();
-        CallMethodInfo cmi = InCallPluginHelper.getCallMethod(cmiStored.mComponent);
+        CallMethodInfo cmi = ContactsDataSubscription.get(this).getPluginIfExists(cmiStored
+                .mComponent);
+        ContactsPendingIntents cpi = mIntentMap.get(cmiStored.mComponent);
         Intent intent = tag.getIntent();
         if (cmi == null || intent == null) {
+            InCallPluginUtils.displayPendingIntentError(mScroller,
+                    getResources().getString(R.string.incall_plugin_intent_error));
             return;
         }
         try {
@@ -3667,6 +3679,9 @@ public class QuickContactActivity extends ContactsActivity implements
             } else if (intent.getAction().equals(ACTION_INCALL_PLUGIN_LOGIN)) {
                 if (cmi.mLoginIntent != null) {
                     cmi.mLoginIntent.send();
+                } else {
+                    InCallPluginUtils.displayPendingIntentError(mScroller,
+                            getResources().getString(R.string.incall_plugin_intent_error));
                 }
                 InCallMetricsHelper.setValue(
                         this,
@@ -3677,26 +3692,19 @@ public class QuickContactActivity extends ContactsActivity implements
                         InCallMetricsHelper.EVENT_ACCEPT,
                         InCallMetricsHelper.generateNudgeId(cmi.mLoginNudgeSubtitle));
             } else if (intent.getAction().equals(ACTION_INCALL_PLUGIN_INVITE)) {
-                if (cmi.mInviteIntent != null) {
-                    cmi.mInviteIntent.send();
+                if (cpi != null && cpi.mInviteIntent != null) {
+                    cpi.mInviteIntent.send();
                 } else {
-                    cmi.mInviteIntent = InCallPluginHelper.getInviteIntentSync(cmi.mComponent,
-                            InCallPluginUtils.getInCallContactInfo(mContactData));
-                    if (cmi.mInviteIntent != null) {
-                        cmi.mInviteIntent.send();
-                    }
+                    InCallPluginUtils.displayPendingIntentError(mScroller,
+                            getResources().getString(R.string.incall_plugin_intent_error));
                 }
                 InCallMetricsHelper.increaseInviteCount(this, cmi.mComponent.flattenToString());
             } else if (intent.getAction().equals(ACTION_INCALL_PLUGIN_DIRECTORY_SEARCH)) {
-                if (cmi.mDirectorySearchIntent != null) {
-                    cmi.mDirectorySearchIntent.send();
+                if (cpi != null && cpi.mDirectorySearchIntent != null) {
+                    cpi.mDirectorySearchIntent.send();
                 } else {
-                    cmi.mDirectorySearchIntent =
-                    InCallPluginHelper.getDirectorySearchIntentSync(cmi.mComponent,
-                            InCallPluginUtils.getInCallContactInfo(mContactData).mLookupUri);
-                    if (cmi.mDirectorySearchIntent != null) {
-                        cmi.mDirectorySearchIntent.send();
-                    }
+                    InCallPluginUtils.displayPendingIntentError(mScroller,
+                            getResources().getString(R.string.incall_plugin_intent_error));
                 }
             }
         } catch (PendingIntent.CanceledException e) {
@@ -3732,21 +3740,23 @@ public class QuickContactActivity extends ContactsActivity implements
         mContactCard.setVisibility(View.VISIBLE);
     }
 
-    private CallMethodHelper.CallMethodReceiver pluginsUpdatedReceiver =
-            new CallMethodHelper.CallMethodReceiver() {
+    private ContactsDataSubscription.PluginChanged<CallMethodInfo> pluginsUpdatedReceiver =
+            new ContactsDataSubscription.PluginChanged<CallMethodInfo>() {
                 @Override
-                public void onChanged(HashMap<ComponentName, CallMethodInfo> callMethodInfos) {
-                    updatePlugins(callMethodInfos);
+                public void onChanged(HashMap<ComponentName, CallMethodInfo> pluginInfos) {
+                    updatePlugins(pluginInfos);
                 }
             };
 
     // Global CallMethod map that keeps track of the currently displayed plugins
-    HashMap<ComponentName, CallMethodInfo> mCallMethodMap = new HashMap<ComponentName, CallMethodInfo>();
+    HashMap<ComponentName, CallMethodInfo> mCallMethodMap = new HashMap<>();
+    HashMap<ComponentName, ContactsPendingIntents> mIntentMap = new HashMap<>();
 
     private void updatePlugins(HashMap<ComponentName, CallMethodInfo> callMethods) {
         if (DEBUG) Log.d(TAG, "+++updatePlugins");
         HashMap<ComponentName, CallMethodInfo> newCmMap = (HashMap<ComponentName, CallMethodInfo>)
-                InCallPluginHelper.getAllEnabledAndHiddenCallMethods();
+                CallMethodFilters.getAllEnabledAndHiddenCallMethods(
+                        ContactsDataSubscription.get(this));
         boolean updateNeeded = false;
         if (mContactData == null) {
             return;
@@ -3762,7 +3772,7 @@ public class QuickContactActivity extends ContactsActivity implements
             if (newCmMap.containsKey(cn)) {
                 // Check if update needed
                 CallMethodInfo newCmi = newCmMap.remove(cn);
-                if (!newCmi.equals(cmi) || newCmi.mIsAuthenticated != cmi.mIsAuthenticated) {
+                if (newCmi.mIsAuthenticated != cmi.mIsAuthenticated) {
                     updateNeeded = true;
                 }
             } else {
