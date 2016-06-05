@@ -39,6 +39,9 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
     libphonenumber \
     libSudaPinYin \
     libSudaLocation \
+    libSudaSdk \
+    libOkHttp \
+    libOKIO \
     org.cyanogenmod.platform.sdk \
     contacts-picaso
 
