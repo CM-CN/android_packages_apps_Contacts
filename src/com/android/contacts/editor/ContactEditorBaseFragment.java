@@ -16,6 +16,7 @@
 
 package com.android.contacts.editor;
 
+import com.android.contacts.common.logging.ScreenEvent.ScreenType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 
@@ -67,6 +68,7 @@ import android.provider.ContactsContract.CommonDataKinds.Email;
 import android.provider.ContactsContract.CommonDataKinds.Event;
 import android.provider.ContactsContract.CommonDataKinds.Organization;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
+import android.provider.ContactsContract.CommonDataKinds.StructuredName;
 import android.provider.ContactsContract.CommonDataKinds.StructuredPostal;
 import android.provider.ContactsContract.Contacts;
 import android.provider.ContactsContract.Intents;
@@ -85,19 +87,23 @@ import android.widget.ListPopupWindow;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Base Fragment for contact editors.
  */
 abstract public class ContactEditorBaseFragment extends Fragment implements
         ContactEditor, SplitContactConfirmationDialogFragment.Listener,
+        JoinContactConfirmationDialogFragment.Listener,
         AggregationSuggestionEngine.Listener, AggregationSuggestionView.Listener,
         CancelEditDialogFragment.Listener {
 
     static final String TAG = "ContactEditor";
 
-    protected static final int LOADER_DATA = 1;
+    protected static final int LOADER_CONTACT = 1;
     protected static final int LOADER_GROUPS = 2;
 
     private static final List<String> VALID_INTENT_ACTIONS = new ArrayList<String>() {{
@@ -115,7 +121,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     private static final String KEY_NEW_LOCAL_PROFILE = "newLocalProfile";
     private static final String KEY_MATERIAL_PALETTE = "materialPalette";
     private static final String KEY_PHOTO_ID = "photoId";
-    private static final String KEY_NAME_ID = "nameId";
 
     private static final String KEY_VIEW_ID_GENERATOR = "viewidgenerator";
 
@@ -126,10 +131,11 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
 
     private static final String KEY_HAS_NEW_CONTACT = "hasNewContact";
     private static final String KEY_NEW_CONTACT_READY = "newContactDataReady";
-    private static final String KEY_NEW_CONTACT_ACCOUNT_CHANGED = "newContactAccountChanged";
 
     private static final String KEY_IS_EDIT = "isEdit";
     private static final String KEY_EXISTING_CONTACT_READY = "existingContactDataReady";
+
+    private static final String KEY_RAW_CONTACT_DISPLAY_ALONE_IS_READ_ONLY = "isReadOnly";
 
     // Phone option menus
     private static final String KEY_SEND_TO_VOICE_MAIL_STATE = "sendToVoicemailState";
@@ -147,11 +153,13 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     // Join Activity
     private static final String KEY_CONTACT_ID_FOR_JOIN = "contactidforjoin";
 
-    private static final String KEY_UPDATED_PHOTOS = "updatedPhotos";
+    private static final String KEY_READ_ONLY_DISPLAY_NAME = "readOnlyDisplayName";
 
     protected static final int REQUEST_CODE_JOIN = 0;
     protected static final int REQUEST_CODE_ACCOUNTS_CHANGED = 1;
     protected static final int REQUEST_CODE_PICK_RINGTONE = 2;
+
+    private static final int CURRENT_API_VERSION = android.os.Build.VERSION.SDK_INT;
 
     /**
      * An intent extra that forces the editor to add the edited contact
@@ -181,20 +189,23 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             "material_palette_secondary_color";
 
     /**
-     * Intent key to pass a Bundle of raw contact IDs to photos URIs between the compact editor
-     * and the fully expanded one.
-     */
-    public static final String INTENT_EXTRA_UPDATED_PHOTOS = "updated_photos";
-
-    /**
      * Intent key to pass the ID of the photo to display on the editor.
      */
     public static final String INTENT_EXTRA_PHOTO_ID = "photo_id";
 
     /**
-     * Intent key to pass the ID of the name to display on the editor.
+     * Intent key to pass the ID of the raw contact id that should be displayed in the full editor
+     * by itself.
      */
-    public static final String INTENT_EXTRA_NAME_ID = "name_id";
+    public static final String INTENT_EXTRA_RAW_CONTACT_ID_TO_DISPLAY_ALONE =
+            "raw_contact_id_to_display_alone";
+
+    /**
+     * Intent key to pass the boolean value of if the raw contact id that should be displayed
+     * in the full editor by itself is read-only.
+     */
+    public static final String INTENT_EXTRA_RAW_CONTACT_DISPLAY_ALONE_IS_READ_ONLY =
+            "raw_contact_display_alone_is_read_only";
 
     /**
      * Intent extra to specify a {@link ContactEditor.SaveMode}.
@@ -202,10 +213,9 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     public static final String SAVE_MODE_EXTRA_KEY = "saveMode";
 
     /**
-     * Intent extra to specify whether the save was initiated as a result of a back button press
-     * or because the framework stopped the editor Activity.
+     * Intent extra key for the contact ID to join the current contact to after saving.
      */
-    public static final String INTENT_EXTRA_SAVE_BACK_PRESSED = "saveBackPressed";
+    public static final String JOIN_CONTACT_ID_EXTRA_KEY = "joinContactId";
 
     /**
      * Callbacks for Activities that host contact editors Fragments.
@@ -333,7 +343,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     protected boolean mNewLocalProfile;
     protected MaterialColorMapUtils.MaterialPalette mMaterialPalette;
     protected long mPhotoId = -1;
-    protected long mNameId = -1;
 
     //
     // Helpers
@@ -356,9 +365,12 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     //
     protected RawContactDeltaList mState;
     protected int mStatus;
+    protected long mRawContactIdToDisplayAlone = -1;
+    protected boolean mRawContactDisplayAloneIsReadOnly = false;
 
     // Whether to show the new contact blank form and if it's corresponding delta is ready.
     protected boolean mHasNewContact;
+    protected AccountWithDataSet mAccountWithDataSet;
     protected boolean mNewContactDataReady;
     protected boolean mNewContactAccountChanged;
 
@@ -383,24 +395,22 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     // Join Activity
     protected long mContactIdForJoin;
 
-    // Full resolution photo URIs
-    protected Bundle mUpdatedPhotos = new Bundle();
+    // Used to pre-populate the editor with a display name when a user edits a read-only contact.
+    protected String mReadOnlyDisplayName;
 
     //
     // Not saved/restored on rotates
     //
 
-    // Used to pre-populate the editor with a display name when a user edits a read-only contact.
-    protected String mReadOnlyDisplayName;
-
     // The name editor view for the new raw contact that was created so that the user can
     // edit a read-only contact (to which the new raw contact was joined)
     protected StructuredNameEditorView mReadOnlyNameEditorView;
 
+    private boolean isSimAccount = false;
     /**
      * The contact data loader listener.
      */
-    protected final LoaderManager.LoaderCallbacks<Contact> mDataLoaderListener =
+    protected final LoaderManager.LoaderCallbacks<Contact> mContactLoaderListener =
             new LoaderManager.LoaderCallbacks<Contact>() {
 
                 protected long mLoaderStartTime;
@@ -439,9 +449,9 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             };
 
     /**
-     * The group meta data loader listener.
+     * The groups meta data loader listener.
      */
-    protected final LoaderManager.LoaderCallbacks<Cursor> mGroupLoaderListener =
+    protected final LoaderManager.LoaderCallbacks<Cursor> mGroupsLoaderListener =
             new LoaderManager.LoaderCallbacks<Cursor>() {
 
                 @Override
@@ -489,7 +499,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             mNewLocalProfile = savedState.getBoolean(KEY_NEW_LOCAL_PROFILE);
             mMaterialPalette = savedState.getParcelable(KEY_MATERIAL_PALETTE);
             mPhotoId = savedState.getLong(KEY_PHOTO_ID);
-            mNameId = savedState.getLong(KEY_NAME_ID);
 
             mRawContacts = ImmutableList.copyOf(savedState.<RawContact>getParcelableArrayList(
                     KEY_RAW_CONTACTS));
@@ -498,10 +507,11 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             // Read state from savedState. No loading involved here
             mState = savedState.<RawContactDeltaList> getParcelable(KEY_EDIT_STATE);
             mStatus = savedState.getInt(KEY_STATUS);
+            mRawContactDisplayAloneIsReadOnly = savedState.getBoolean(
+                    KEY_RAW_CONTACT_DISPLAY_ALONE_IS_READ_ONLY);
 
             mHasNewContact = savedState.getBoolean(KEY_HAS_NEW_CONTACT);
             mNewContactDataReady = savedState.getBoolean(KEY_NEW_CONTACT_READY);
-            mNewContactAccountChanged = savedState.getBoolean(KEY_NEW_CONTACT_ACCOUNT_CHANGED);
 
             mIsEdit = savedState.getBoolean(KEY_IS_EDIT);
             mExistingContactDataReady = savedState.getBoolean(KEY_EXISTING_CONTACT_READY);
@@ -522,8 +532,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             // Join Activity
             mContactIdForJoin = savedState.getLong(KEY_CONTACT_ID_FOR_JOIN);
 
-            // Full resolution photo URIs
-            mUpdatedPhotos = savedState.getParcelable(KEY_UPDATED_PHOTOS);
+            mReadOnlyDisplayName = savedState.getString(KEY_READ_ONLY_DISPLAY_NAME);
         }
 
         // mState can still be null because it may not have have finished loading before
@@ -545,11 +554,11 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             // database.
             if (Intent.ACTION_EDIT.equals(mAction) ||
                     ContactEditorBaseActivity.ACTION_EDIT.equals(mAction)) {
-                // Either...
+                // Either
                 // 1) orientation change but load never finished.
-                // or
-                // 2) not an orientation change.  data needs to be loaded for first time.
-                getLoaderManager().initLoader(LOADER_DATA, null, mDataLoaderListener);
+                // 2) not an orientation change so data needs to be loaded for first time.
+                getLoaderManager().initLoader(LOADER_CONTACT, null, mContactLoaderListener);
+                getLoaderManager().initLoader(LOADER_GROUPS, null, mGroupsLoaderListener);
             }
         } else {
             // Orientation change, we already have mState, it was loaded by onCreate
@@ -558,20 +567,22 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
 
         // Handle initial actions only when existing state missing
         if (savedInstanceState == null) {
+            final Account account = mIntentExtras == null ? null :
+                    (Account) mIntentExtras.getParcelable(Intents.Insert.EXTRA_ACCOUNT);
+            final String dataSet = mIntentExtras == null ? null :
+                    mIntentExtras.getString(Intents.Insert.EXTRA_DATA_SET);
+            if (account != null) {
+                mAccountWithDataSet = new AccountWithDataSet(account.name, account.type, dataSet);
+            }
+
             if (Intent.ACTION_EDIT.equals(mAction) ||
                     ContactEditorBaseActivity.ACTION_EDIT.equals(mAction)) {
                 mIsEdit = true;
             } else if (Intent.ACTION_INSERT.equals(mAction) ||
                     ContactEditorBaseActivity.ACTION_INSERT.equals(mAction)) {
                 mHasNewContact = true;
-                final Account account = mIntentExtras == null ? null :
-                        (Account) mIntentExtras.getParcelable(Intents.Insert.EXTRA_ACCOUNT);
-                final String dataSet = mIntentExtras == null ? null :
-                        mIntentExtras.getString(Intents.Insert.EXTRA_DATA_SET);
-
-                if (account != null) {
-                    // Account specified in Intent
-                    createContact(new AccountWithDataSet(account.name, account.type, dataSet));
+                if (mAccountWithDataSet != null) {
+                    createContact(mAccountWithDataSet);
                 } else {
                     // No Account specified. Let the user choose
                     // Load Accounts async so that we can present them
@@ -596,12 +607,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     }
 
     @Override
-    public void onStart() {
-        getLoaderManager().initLoader(LOADER_GROUPS, null, mGroupLoaderListener);
-        super.onStart();
-    }
-
-    @Override
     public void onSaveInstanceState(Bundle outState) {
         outState.putString(KEY_ACTION, mAction);
         outState.putParcelable(KEY_URI, mLookupUri);
@@ -612,7 +617,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             outState.putParcelable(KEY_MATERIAL_PALETTE, mMaterialPalette);
         }
         outState.putLong(KEY_PHOTO_ID, mPhotoId);
-        outState.putLong(KEY_NAME_ID, mNameId);
 
         outState.putParcelable(KEY_VIEW_ID_GENERATOR, mViewIdGenerator);
 
@@ -627,9 +631,10 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         outState.putInt(KEY_STATUS, mStatus);
         outState.putBoolean(KEY_HAS_NEW_CONTACT, mHasNewContact);
         outState.putBoolean(KEY_NEW_CONTACT_READY, mNewContactDataReady);
-        outState.putBoolean(KEY_NEW_CONTACT_ACCOUNT_CHANGED, mNewContactAccountChanged);
         outState.putBoolean(KEY_IS_EDIT, mIsEdit);
         outState.putBoolean(KEY_EXISTING_CONTACT_READY, mExistingContactDataReady);
+        outState.putBoolean(KEY_RAW_CONTACT_DISPLAY_ALONE_IS_READ_ONLY,
+                mRawContactDisplayAloneIsReadOnly);
 
         outState.putBoolean(KEY_IS_USER_PROFILE, mIsUserProfile);
 
@@ -647,24 +652,14 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         // Join Activity
         outState.putLong(KEY_CONTACT_ID_FOR_JOIN, mContactIdForJoin);
 
-        // Full resolution photo URIs
-        outState.putParcelable(KEY_UPDATED_PHOTOS, mUpdatedPhotos);
+        outState.putString(KEY_READ_ONLY_DISPLAY_NAME, mReadOnlyDisplayName);
 
         super.onSaveInstanceState(outState);
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
-        if (Intent.ACTION_EDIT.equals(mAction)) {
-            mHasNewContact = false;
-        }
-    }
-
-    @Override
     public void onStop() {
         super.onStop();
-
         UiClosables.closeQuietly(mAggregationSuggestionPopup);
     }
 
@@ -684,7 +679,13 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                 if (resultCode != Activity.RESULT_OK) return;
                 if (data != null) {
                     final long contactId = ContentUris.parseId(data.getData());
-                    joinAggregate(contactId);
+                    if (hasPendingChanges()) {
+                        // Ask the user if they want to save changes before doing the join
+                        JoinContactConfirmationDialogFragment.show(this, contactId);
+                    } else {
+                        // Do the join immediately
+                        joinAggregate(contactId);
+                    }
                 }
                 break;
             }
@@ -723,11 +724,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     }
 
     private void onRingtonePicked(Uri pickedUri) {
-        if (pickedUri == null || RingtoneManager.isDefault(pickedUri)) {
-            mCustomRingtone = null;
-        } else {
-            mCustomRingtone = pickedUri.toString();
-        }
+        mCustomRingtone = EditorUiUtils.getRingtoneStringFromUri(pickedUri, CURRENT_API_VERSION);
         Intent intent = ContactSaveService.createSetRingtone(
                 mContext, mLookupUri, mCustomRingtone);
         mContext.startService(intent);
@@ -770,55 +767,50 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         final MenuItem splitMenu = menu.findItem(R.id.menu_split);
         final MenuItem joinMenu = menu.findItem(R.id.menu_join);
         final MenuItem helpMenu = menu.findItem(R.id.menu_help);
-        final MenuItem discardMenu = menu.findItem(R.id.menu_discard);
         final MenuItem sendToVoiceMailMenu = menu.findItem(R.id.menu_send_to_voicemail);
         final MenuItem ringToneMenu = menu.findItem(R.id.menu_set_ringtone);
         final MenuItem deleteMenu = menu.findItem(R.id.menu_delete);
 
         // Set visibility of menus
-        // Discard menu is only available if at least one raw contact is editable
-        discardMenu.setVisible(mState != null &&
-                mState.getFirstWritableRawContact(mContext) != null);
 
+        if (mState != null && mState.size() > 0 && mState.get(0).getAccountType() !=null) {
+            isSimAccount = mState.get(0).getAccountType()
+                    .equals(SimAccountType.ACCOUNT_TYPE);
+        }
         // help menu depending on whether this is inserting or editing
-        if (isInsert(mAction)) {
+        if (isInsert(mAction) || mRawContactIdToDisplayAlone != -1) {
             HelpUtils.prepareHelpMenuItem(mContext, helpMenu, R.string.help_url_people_add);
-            discardMenu.setVisible(false);
             splitMenu.setVisible(false);
             joinMenu.setVisible(false);
             deleteMenu.setVisible(false);
         } else if (isEdit(mAction)) {
             HelpUtils.prepareHelpMenuItem(mContext, helpMenu, R.string.help_url_people_edit);
-            // Split only if there is more than one raw contact, it is not a user-profile, and
-            // splitting won't result in an empty contact. For the empty contact case, we only guard
-            // against this when there is a single read-only contact in the aggregate.  If the user
-            // has joined >1 read-only contacts together, we allow them to split it,
-            // even if they have never added their own information and splitting will create a
-            // name only contact.
-            final boolean isSingleReadOnlyContact = mHasNewContact && mState.size() == 2;
-            String accountType = null;
-            if (mState.size() > 0) {
-                accountType = mState.get(0).getAccountType();
-            }
-            splitMenu.setVisible(mState.size() > 1 && !isEditingUserProfile()
-                    && !isSingleReadOnlyContact);
-            // Cannot join a user profile
-            if (accountType != null && SimAccountType.ACCOUNT_TYPE.equals(accountType)) {
-                joinMenu.setVisible(false);
+            if (!isSimAccount) {
+                splitMenu.setVisible(canUnlinkRawContacts());
             } else {
-                joinMenu.setVisible(!isEditingUserProfile());
+                joinMenu.setVisible(false);
             }
-            deleteMenu.setVisible(!mDisableDeleteMenuOption);
+            // Cannot join a user profile
+            joinMenu.setVisible(!isEditingUserProfile());
+            deleteMenu.setVisible(!mDisableDeleteMenuOption && !isEditingUserProfile());
         } else {
             // something else, so don't show the help menu
             helpMenu.setVisible(false);
         }
 
-        // Hide telephony-related settings (ringtone, send to voicemail)
-        // if we don't have a telephone or are editing a new contact.
-        sendToVoiceMailMenu.setChecked(mSendToVoicemailState);
-        sendToVoiceMailMenu.setVisible(mArePhoneOptionsChangable);
-        ringToneMenu.setVisible(mArePhoneOptionsChangable);
+        // Save menu is invisible when there's only one read only contact in the editor.
+        saveMenu.setVisible(!mRawContactDisplayAloneIsReadOnly);
+
+        if (mRawContactIdToDisplayAlone != -1 || mIsUserProfile) {
+            sendToVoiceMailMenu.setVisible(false);
+            ringToneMenu.setVisible(false);
+        } else {
+            // Hide telephony-related settings (ringtone, send to voicemail)
+            // if we don't have a telephone or are editing a new contact.
+            sendToVoiceMailMenu.setChecked(mSendToVoicemailState);
+            sendToVoiceMailMenu.setVisible(mArePhoneOptionsChangable);
+            ringToneMenu.setVisible(mArePhoneOptionsChangable && !isSimAccount);
+        }
 
         int size = menu.size();
         for (int i = 0; i < size; i++) {
@@ -828,11 +820,16 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
+        final Activity activity = getActivity();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            // If we no longer are attached to a running activity want to
+            // drain this event.
+            return true;
+        }
+
         switch (item.getItemId()) {
             case R.id.menu_save:
-                return save(SaveMode.CLOSE, /* backPressed =*/ true);
-            case R.id.menu_discard:
-                return revert();
+                return save(SaveMode.CLOSE);
             case R.id.menu_delete:
                 if (mListener != null) mListener.onDeleteRequested(mLookupUri);
                 return true;
@@ -876,7 +873,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     }
 
     @Override
-    public void onSplitContactConfirmed() {
+    public void onSplitContactConfirmed(boolean hasPendingChanges) {
         if (mState.isEmpty()) {
             // This may happen when this Fragment is recreated by the system during users
             // confirming the split action (and thus this method is called just before onCreate()),
@@ -886,32 +883,49 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             return;
         }
 
+        if (!hasPendingChanges && mHasNewContact) {
+            // If the user didn't add anything new, we don't want to split out the newly created
+            // raw contact into a name-only contact so remove them.
+            final Iterator<RawContactDelta> iterator = mState.iterator();
+            while (iterator.hasNext()) {
+                final RawContactDelta rawContactDelta = iterator.next();
+                if (rawContactDelta.getRawContactId() < 0) {
+                    iterator.remove();
+                }
+            }
+        }
         mState.markRawContactsForSplitting();
-        save(SaveMode.SPLIT, /* backPressed =*/ false);
+        save(SaveMode.SPLIT);
     }
 
     private boolean doSplitContactAction() {
         if (!hasValidState()) return false;
 
-        SplitContactConfirmationDialogFragment.show(this);
+        SplitContactConfirmationDialogFragment.show(this, hasPendingChanges());
         return true;
     }
 
     private boolean doJoinContactAction() {
-        if (!hasValidState()) {
+        if (!hasValidState() || mLookupUri == null) {
             return false;
         }
 
         // If we just started creating a new contact and haven't added any data, it's too
         // early to do a join
         if (mState.size() == 1 && mState.get(0).isContactInsert()
-                && !hasPendingRawContactChanges()) {
+                && !hasPendingChanges()) {
             Toast.makeText(mContext, R.string.toast_join_with_empty_contact,
                     Toast.LENGTH_LONG).show();
             return true;
         }
 
-        return save(SaveMode.JOIN, /* backPressed =*/ false);
+        showJoinAggregateActivity(mLookupUri);
+        return true;
+    }
+
+    @Override
+    public void onJoinContactConfirmed(long joinContactId) {
+        doSaveAction(SaveMode.JOIN, joinContactId);
     }
 
     private void doPickRingtone() {
@@ -920,16 +934,11 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true);
         // Show only ringtones
         intent.putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_RINGTONE);
-        // Remove silent option from ringtone
-        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false);
+        // Allow the user to pick a silent ringtone
+        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true);
 
-        final Uri ringtoneUri;
-        if (mCustomRingtone != null) {
-            ringtoneUri = Uri.parse(mCustomRingtone);
-        } else {
-            // Otherwise pick default ringtone Uri so that something is selected.
-            ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-        }
+        final Uri ringtoneUri = EditorUiUtils.getRingtoneUriFromString(mCustomRingtone,
+                CURRENT_API_VERSION);
 
         // Put checkmark next to the current ringtone for this contact
         intent.putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, ringtoneUri);
@@ -943,7 +952,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     }
 
     @Override
-    public boolean save(int saveMode, boolean backPressed) {
+    public boolean save(int saveMode) {
         if (!hasValidState() || mStatus != Status.EDITING) {
             return false;
         }
@@ -951,15 +960,12 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         // If we are about to close the editor - there is no need to refresh the data
         if (saveMode == SaveMode.CLOSE || saveMode == SaveMode.COMPACT
                 || saveMode == SaveMode.SPLIT) {
-            getLoaderManager().destroyLoader(LOADER_DATA);
+            getLoaderManager().destroyLoader(LOADER_CONTACT);
         }
 
         mStatus = Status.SAVING;
 
-        // If the user did nothing else expect change the account type, we must still
-        // consider this as an unsaved change so the new rawcontact is passed back to the
-        // compact editor on inserts.
-        if (!mNewContactAccountChanged && !hasPendingChanges()) {
+        if (!hasPendingChanges()) {
             if (mLookupUri == null && saveMode == SaveMode.RELOAD) {
                 // We don't have anything to save and there isn't even an existing contact yet.
                 // Nothing to do, simply go back to editing mode
@@ -967,36 +973,39 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                 return true;
             }
             onSaveCompleted(/* hadChanges =*/ false, saveMode,
-                    /* saveSucceeded =*/ mLookupUri != null, mLookupUri,
-                    /* updatedPhotos =*/ null, backPressed, mPhotoId, mNameId,
-                    getActivity().getIntent().getIntExtra(
-                            ContactSaveService.SAVE_CONTACT_RESULT, 0));
+                    /* saveSucceeded =*/ mLookupUri != null, mLookupUri, /* joinContactId =*/ null
+                    , getActivity().getIntent().getIntExtra(
+                          ContactSaveService.SAVE_CONTACT_RESULT, 0));
             return true;
         }
 
         setEnabled(false);
 
-        // Store account as default account, only if this is a new contact
-        saveDefaultAccountIfNecessary();
-
-        if (isInsert(getActivity().getIntent()) && saveMode == SaveMode.COMPACT
-                && mListener != null && backPressed) {
-            // If we're coming back from the fully expanded editor and this is an insert, just
-            // pass any values entered by the user back to the compact editor without doing a save
-            final Intent resultIntent = EditorIntents.createCompactInsertContactIntent(
-                    mState, getDisplayName(), getPhoneticName(), mUpdatedPhotos);
-            resultIntent.putExtra(INTENT_EXTRA_SAVE_BACK_PRESSED, backPressed);
-            mListener.onSaveFinished(resultIntent);
-            return true;
-        }
-        // Otherwise this is an edit or a back press so do an actual save
-        return doSaveAction(saveMode, backPressed);
+        removeSimPhoto();
+        return doSaveAction(saveMode, /* joinContactId */ null);
     }
 
     /**
-     * Persist the accumulated editor deltas.
+     * Remove the Sim photo info.
      */
-    abstract protected boolean doSaveAction(int saveMode, boolean backPressed);
+    abstract protected void removeSimPhoto();
+
+    /**
+     * Persist the accumulated editor deltas.
+     *
+     * @param joinContactId the raw contact ID to join the contact being saved to after the save,
+     *         may be null.
+     */
+    abstract protected boolean doSaveAction(int saveMode, Long joinContactId);
+
+    protected boolean startSaveService(Context context, Intent intent, int saveMode) {
+        final boolean result = ContactSaveService.startService(
+                context, intent, saveMode);
+        if (!result) {
+            onCancelEditConfirmed();
+        }
+        return result;
+    }
 
     //
     // State accessor methods
@@ -1015,42 +1024,61 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     }
 
     /**
+     * Whether the contact being edited spans multiple raw contacts.
+     * The may also span multiple accounts.
+     */
+    public boolean isEditingMultipleRawContacts() {
+        return mState.size() > 1;
+    }
+
+    /**
+     * Whether the contact being edited is composed of a single read-only raw contact
+     * aggregated with a newly created writable raw contact.
+     */
+    protected boolean isEditingReadOnlyRawContactWithNewContact() {
+        return mHasNewContact && mState.size() == 2;
+    }
+
+    /**
      * Return true if there are any edits to the current contact which need to
      * be saved.
      */
-    protected boolean hasPendingRawContactChanges() {
+    protected boolean hasPendingRawContactChanges(Set<String> excludedMimeTypes) {
         final AccountTypeManager accountTypes = AccountTypeManager.getInstance(mContext);
-        return RawContactModifier.hasChanges(mState, accountTypes);
+        return RawContactModifier.hasChanges(mState, accountTypes, excludedMimeTypes);
+    }
+
+    /**
+     * We allow unlinking only if there is more than one raw contact, it is not a user-profile,
+     * and unlinking won't result in an empty contact.  For the empty contact case, we only guard
+     * against this when there is a single read-only contact in the aggregate.  If the user
+     * has joined >1 read-only contacts together, we allow them to unlink it, even if they have
+     * never added their own information and unlinking will create a name only contact.
+     */
+    protected boolean canUnlinkRawContacts() {
+        return isEditingMultipleRawContacts()
+                && !isEditingUserProfile()
+                && !isEditingReadOnlyRawContactWithNewContact();
     }
 
     /**
      * Determines if changes were made in the editor that need to be saved, while taking into
-     * account that name changes are not realfor read-only contacts.
+     * account that name changes are not real for read-only contacts.
      * See go/editing-read-only-contacts
      */
     protected boolean hasPendingChanges() {
-        if (mReadOnlyNameEditorView == null || mReadOnlyDisplayName == null) {
-            return hasPendingRawContactChanges();
-        }
-        // We created a new raw contact delta with a default display name.
-        // We must test for pending changes while ignoring the default display name.
-        final String displayName = mReadOnlyNameEditorView.getDisplayName();
-        if (mReadOnlyDisplayName.equals(displayName)) {
-            // The user did not modify the default display name, erase it and
-            // check if the user made any other changes
-            mReadOnlyNameEditorView.setDisplayName(null);
-            if (hasPendingRawContactChanges()) {
-                // Other changes were made to the aggregate contact, restore
-                // the display name and proceed.
-                mReadOnlyNameEditorView.setDisplayName(displayName);
-                return true;
-            } else {
-                // No other changes were made to the aggregate contact. Don't add back
-                // the displayName so that a "bogus" contact is not created.
-                return false;
+        if (mReadOnlyNameEditorView != null && mReadOnlyDisplayName != null) {
+            // We created a new raw contact delta with a default display name.
+            // We must test for pending changes while ignoring the default display name.
+            final String displayName = mReadOnlyNameEditorView.getDisplayName();
+            if (mReadOnlyDisplayName.equals(displayName)) {
+                final Set<String> excludedMimeTypes = new HashSet<>();
+                excludedMimeTypes.add(StructuredName.CONTENT_ITEM_TYPE);
+                return hasPendingRawContactChanges(excludedMimeTypes);
             }
+            return true;
         }
-        return true;
+        return hasPendingRawContactChanges(/* excludedMimeTypes =*/ null);
     }
 
     /**
@@ -1066,16 +1094,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     protected MaterialColorMapUtils.MaterialPalette getMaterialPalette() {
         return mMaterialPalette;
     }
-
-    /**
-     * Returns the currently displayed displayName;
-     */
-    abstract protected String getDisplayName();
-
-    /**
-     * Returns the currently displayed phonetic name;
-     */
-    abstract protected String getPhoneticName();
 
     //
     // Account creation
@@ -1137,28 +1155,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                 mListener.onCustomCreateContactActivityRequested(account, mIntentExtras);
             }
         } else {
-            setStateForNewContact(account, accountType);
-        }
-    }
-
-    /**
-     * Saves all writable accounts and the default account, but only for new contacts.
-     */
-    protected void saveDefaultAccountIfNecessary() {
-        // Verify that this is a newly created contact composed of only 1 raw contact
-        // and not a user profile
-        if (isInsert(mAction) && mState.size() == 1 && !isEditingUserProfile()) {
-            // Find the associated account for this contact (retrieve it here because there are
-            // multiple paths to creating a contact and this ensures we always have the correct
-            // account).
-            final RawContactDelta rawContactDelta = mState.get(0);
-            String name = rawContactDelta.getAccountName();
-            String type = rawContactDelta.getAccountType();
-            String dataSet = rawContactDelta.getDataSet();
-
-            AccountWithDataSet account = (name == null || type == null) ? null :
-                    new AccountWithDataSet(name, type, dataSet);
-            mEditorUtils.saveDefaultAndAllAccounts(account);
+            setStateForNewContact(account, accountType, isEditingUserProfile());
         }
     }
 
@@ -1204,6 +1201,8 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             selectAccountAndCreateContact();
 
             readOnlyDisplayName = contact.getDisplayName();
+        } else {
+            mHasNewContact = false;
         }
 
         // This also adds deltas to list.  If readOnlyDisplayName is null at this point it is
@@ -1214,9 +1213,10 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     /**
      * Prepare {@link #mState} for a newly created phone-local contact.
      */
-    private void setStateForNewContact(AccountWithDataSet account, AccountType accountType) {
-        setStateForNewContact(account, accountType,
-                /* oldState =*/ null, /* oldAccountType =*/ null);
+    private void setStateForNewContact(AccountWithDataSet account, AccountType accountType,
+            boolean isUserProfile) {
+        setStateForNewContact(account, accountType, /* oldState =*/ null,
+                /* oldAccountType =*/ null, isUserProfile);
     }
 
     /**
@@ -1224,9 +1224,10 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
      * specified by oldState and oldAccountType.
      */
     protected void setStateForNewContact(AccountWithDataSet account, AccountType accountType,
-            RawContactDelta oldState, AccountType oldAccountType) {
+            RawContactDelta oldState, AccountType oldAccountType, boolean isUserProfile) {
         mStatus = Status.EDITING;
         mState.add(createNewRawContactDelta(account, accountType, oldState, oldAccountType));
+        mIsUserProfile = isUserProfile;
         mNewContactDataReady = true;
         bindEditors();
     }
@@ -1295,8 +1296,9 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                 // For profile contacts, we need a different query URI
                 rawContactDelta.setProfileQueryUri();
                 // Try to find a local profile contact
-                if (SimContactsConstants.ACCOUNT_TYPE_PHONE
-                        .equals(rawContactDelta.getAccountType())) {
+                if (rawContactDelta.getValues().getAsString(RawContacts.ACCOUNT_TYPE) == null
+                        || rawContactDelta.getValues().getAsString(RawContacts.ACCOUNT_TYPE)
+                            .equals(SimContactsConstants.ACCOUNT_TYPE_PHONE)) {
                     localProfileExists = true;
                 }
             }
@@ -1366,6 +1368,39 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         }
     }
 
+    /**
+     * Removes a current editor ({@link #mState}) and rebinds new editor for a new account.
+     * Some of old data are reused with new restriction enforced by the new account.
+     *
+     * @param oldState Old data being edited.
+     * @param oldAccount Old account associated with oldState.
+     * @param newAccount New account to be used.
+     */
+    protected void rebindEditorsForNewContact(
+            RawContactDelta oldState, AccountWithDataSet oldAccount,
+            AccountWithDataSet newAccount) {
+        AccountTypeManager accountTypes = AccountTypeManager.getInstance(mContext);
+        AccountType oldAccountType = accountTypes.getAccountTypeForAccount(oldAccount);
+        AccountType newAccountType = accountTypes.getAccountTypeForAccount(newAccount);
+
+        if (newAccountType.getCreateContactActivityClassName() != null) {
+            Log.w(TAG, "external activity called in rebind situation");
+            if (mListener != null) {
+                mListener.onCustomCreateContactActivityRequested(newAccount, mIntentExtras);
+            }
+        } else {
+            mExistingContactDataReady = false;
+            mNewContactDataReady = false;
+            mState = new RawContactDeltaList();
+            setStateForNewContact(newAccount, newAccountType, oldState, oldAccountType,
+                    isEditingUserProfile());
+            if (mIsEdit) {
+                setStateForExistingContact(mReadOnlyDisplayName, isEditingUserProfile(),
+                        mRawContacts);
+            }
+        }
+    }
+
     //
     // ContactEditor
     //
@@ -1394,11 +1429,14 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                         mIntentExtras.getInt(INTENT_EXTRA_MATERIAL_PALETTE_PRIMARY_COLOR),
                         mIntentExtras.getInt(INTENT_EXTRA_MATERIAL_PALETTE_SECONDARY_COLOR));
             }
-            if (mIntentExtras.containsKey(INTENT_EXTRA_UPDATED_PHOTOS)) {
-                mUpdatedPhotos = mIntentExtras.getParcelable(INTENT_EXTRA_UPDATED_PHOTOS);
+            // If the user selected a different photo, don't restore the one from the Intent
+            if (mPhotoId < 0) {
+                mPhotoId = mIntentExtras.getLong(INTENT_EXTRA_PHOTO_ID);
             }
-            mPhotoId = mIntentExtras.getLong(INTENT_EXTRA_PHOTO_ID);
-            mNameId = mIntentExtras.getLong(INTENT_EXTRA_NAME_ID);
+            mRawContactIdToDisplayAlone = mIntentExtras.getLong(
+                    INTENT_EXTRA_RAW_CONTACT_ID_TO_DISPLAY_ALONE, -1);
+            mRawContactDisplayAloneIsReadOnly = mIntentExtras.getBoolean(
+                    INTENT_EXTRA_RAW_CONTACT_DISPLAY_ALONE_IS_READ_ONLY);
         }
     }
 
@@ -1421,81 +1459,73 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
 
     @Override
     public void onJoinCompleted(Uri uri) {
-        onSaveCompleted(false, SaveMode.RELOAD, uri != null, uri, /* updatedPhotos =*/ null,
-                /* backPressed =*/ false, mPhotoId, mNameId,
-                getActivity().getIntent().getIntExtra(ContactSaveService.SAVE_CONTACT_RESULT,
-                        0));
-    }
+        onSaveCompleted(false, SaveMode.RELOAD, uri != null, uri, /* joinContactId */ null,
+                getActivity().getIntent().getIntExtra(
+                        ContactSaveService.SAVE_CONTACT_RESULT, 0));
+        }
 
     @Override
     public void onSaveCompleted(boolean hadChanges, int saveMode, boolean saveSucceeded,
-            Uri contactLookupUri, Bundle updatedPhotos, boolean backPressed, long photoId,
-            long nameId, int result) {
+            Uri contactLookupUri, Long joinContactId, int result) {
         Log.d(TAG, "onSaveCompleted(" + saveMode + ", " + contactLookupUri + ", saveResult:"
                 + result);
         if (hadChanges) {
             if (saveSucceeded) {
-                if (saveMode != SaveMode.JOIN) {
-                    if (null != contactLookupUri) {
-                        Toast.makeText(mContext, R.string.contactSavedToast,
-                                Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(mContext, R.string.contacts_deleted_toast,
-                                Toast.LENGTH_SHORT).show();
-                    }
+                switch (saveMode) {
+                    case SaveMode.JOIN:
+                        break;
+                    case SaveMode.SPLIT:
+                        Toast.makeText(mContext, R.string.contactUnlinkedToast, Toast.LENGTH_SHORT)
+                                .show();
+                        break;
+                    default:
+                        Toast.makeText(mContext, R.string.contactSavedToast, Toast.LENGTH_SHORT)
+                                .show();
                 }
+
             } else {
-                if (result == ContactSaveService.RESULT_AIR_PLANE_MODE) {
-                    // Access SIM card in the "AirPlane"
-                    // mode prompt a toast to alert user.
-                    Toast.makeText(mContext, R.string.airplane_mode_on, Toast.LENGTH_LONG).show();
-                } else if (result == ContactSaveService.RESULT_SIM_FAILURE) {
-                    Toast.makeText(mContext, R.string.contactSavedToSimCardError,
+                switch (result) {
+                    case ContactSaveService.RESULT_NUMBER_INVALID: {
+                        Toast.makeText(mContext, R.string.invalid_phone_number,
                             Toast.LENGTH_LONG).show();
-                } else if (result == ContactSaveService.RESULT_NUMBER_ANR_FAILURE) {
-                    Toast.makeText(mContext, R.string.number_anr_too_long, Toast.LENGTH_LONG)
-                            .show();
-                    mStatus = Status.EDITING;
-                    setEnabled(true);
-                    bindEditors();
-                    return;
-                } else if (result == ContactSaveService.RESULT_EMAIL_FAILURE) {
-                    Toast.makeText(mContext, R.string.email_address_too_long, Toast.LENGTH_LONG)
-                            .show();
-                    mStatus = Status.EDITING;
-                    setEnabled(true);
-                    bindEditors();
-                    return;
-                } else if (result == ContactSaveService.RESULT_SIM_FULL_FAILURE) {
-                    Toast.makeText(mContext, R.string.sim_card_full, Toast.LENGTH_LONG).show();
-                } else if (result == ContactSaveService.RESULT_TAG_FAILURE) {
-                    Toast.makeText(mContext, R.string.tag_too_long, Toast.LENGTH_SHORT).show();
-                    mStatus = Status.EDITING;
-                    setEnabled(true);
-                    bindEditors();
-                    return;
-                } else if (result == ContactSaveService.RESULT_NO_NUMBER_AND_EMAIL) {
-                    Toast.makeText(mContext, R.string.no_phone_number_or_email, Toast.LENGTH_SHORT)
-                            .show();
-                    mStatus = Status.EDITING;
-                    setEnabled(true);
-                    bindEditors();
-                    return;
-                } else if (result == ContactSaveService.RESULT_NUMBER_INVALID) {
-                    Toast.makeText(mContext, R.string.invalid_phone_number, Toast.LENGTH_SHORT)
-                            .show();
-                    mStatus = Status.EDITING;
-                    setEnabled(true);
-                    return;
-                } else if (result == ContactSaveService.RESULT_MEMORY_FULL_FAILURE) {
-                    Toast.makeText(mContext, R.string.memory_card_full, Toast.LENGTH_SHORT)
-                            .show();
-                } else if(result == ContactSaveService.RESULT_NUMBER_TYPE_FAILURE) {
-                    Toast.makeText(mContext, R.string.invalid_number_type, Toast.LENGTH_SHORT)
-                    .show();
-                } else {
-                    Toast.makeText(mContext, R.string.contactSavedErrorToast, Toast.LENGTH_LONG)
-                            .show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_SIM_FAILURE: {
+                        Toast.makeText(mContext,
+                            R.string.contactSavedToSimCardError,
+                            Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_NUMBER_ANR_FAILURE: {
+                        Toast.makeText(mContext, R.string.number_anr_too_long,
+                            Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_EMAIL_FAILURE: {
+                        Toast.makeText(mContext, R.string.email_address_too_long,
+                            Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_SIM_FULL_FAILURE: {
+                        Toast.makeText(mContext, R.string.sim_card_full,
+                            Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_TAG_FAILURE: {
+                        Toast.makeText(mContext, R.string.tag_too_long,
+                            Toast.LENGTH_SHORT).show();
+                        break;
+                    }
+                    case ContactSaveService.RESULT_NO_NUMBER_AND_EMAIL: {
+                        Toast.makeText(mContext, R.string.no_phone_number_or_email,
+                            Toast.LENGTH_SHORT).show();
+                        break;
+                    }
+                    default: {
+                        Toast.makeText(mContext, R.string.contactSavedErrorToast,
+                            Toast.LENGTH_LONG).show();
+                        break;
+                    }
                 }
             }
         }
@@ -1507,43 +1537,35 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                             mContext, contactLookupUri, mLookupUri);
                     resultIntent = ImplicitIntentsUtil.composeQuickContactIntent(lookupUri,
                             QuickContactActivity.MODE_FULLY_EXPANDED);
-                    resultIntent.putExtra(INTENT_EXTRA_SAVE_BACK_PRESSED, backPressed);
+                    resultIntent.putExtra(QuickContactActivity.EXTRA_PREVIOUS_SCREEN_TYPE,
+                            ScreenType.EDITOR);
                 } else {
                     resultIntent = null;
                 }
+                // It is already saved, so prevent it from being saved again
                 mStatus = Status.CLOSING;
                 if (mListener != null) mListener.onSaveFinished(resultIntent);
                 break;
             }
             case SaveMode.COMPACT: {
-                if (!hadChanges && !backPressed && isInsert(getActivity().getIntent())) {
-                    // Reload the empty editor when the Contacts app is resumed
-                    mStatus = Status.EDITING;
-                } else if (backPressed) {
-                    final Uri lookupUri = maybeConvertToLegacyLookupUri(
-                            mContext, contactLookupUri, mLookupUri);
-                    final Intent resultIntent = isInsert(getActivity().getIntent())
-                            ? EditorIntents.createCompactInsertContactIntent(
-                                    mState, getDisplayName(), getPhoneticName(), updatedPhotos)
-                            : EditorIntents.createCompactEditContactIntent(
-                                    lookupUri, getMaterialPalette(), updatedPhotos, photoId,
-                                    nameId);
-                    resultIntent.putExtra(INTENT_EXTRA_SAVE_BACK_PRESSED, true);
-                    mStatus = Status.CLOSING;
-                    if (mListener != null) mListener.onSaveFinished(resultIntent);
-                } else {
-                    reloadFullEditor(contactLookupUri);
-                }
+                // It is already saved, so prevent it from being saved again
+                mStatus = Status.CLOSING;
+                if (mListener != null) mListener.onSaveFinished(/* resultIntent= */ null);
                 break;
             }
-            case SaveMode.RELOAD:
             case SaveMode.JOIN:
+                if (saveSucceeded && contactLookupUri != null && joinContactId != null) {
+                    joinAggregate(joinContactId);
+                }
+                break;
+            case SaveMode.RELOAD:
                 if (saveSucceeded && contactLookupUri != null) {
-                    // If it was a JOIN, we are now ready to bring up the join activity.
-                    if (saveMode == SaveMode.JOIN && hasValidState()) {
-                        showJoinAggregateActivity(contactLookupUri);
-                    }
-                    reloadFullEditor(contactLookupUri);
+                    // If this was in INSERT, we are changing into an EDIT now.
+                    // If it already was an EDIT, we are changing to the new Uri now
+                    mState = new RawContactDeltaList();
+                    load(Intent.ACTION_EDIT, contactLookupUri, null);
+                    mStatus = Status.LOADING;
+                    getLoaderManager().restartLoader(LOADER_CONTACT, null, mContactLoaderListener);
                 }
                 break;
 
@@ -1556,13 +1578,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
                 }
                 break;
         }
-    }
-
-    private void reloadFullEditor(Uri contactLookupUri) {
-        mState = new RawContactDeltaList();
-        load(ContactEditorBaseActivity.ACTION_EDIT, contactLookupUri, null);
-        mStatus = Status.LOADING;
-        getLoaderManager().restartLoader(LOADER_DATA, null, mDataLoaderListener);
     }
 
     /**
@@ -1700,7 +1715,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
         }
 
         mState.setJoinWithRawContacts(rawContactIds);
-        save(SaveMode.RELOAD, /* backPressed =*/ false);
+        save(SaveMode.RELOAD);
     }
 
     @Override
@@ -1731,25 +1746,6 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
     abstract protected void joinAggregate(long contactId);
 
     //
-    // Photos
-    //
-
-    /**
-     * Removes the full resolution photo URIs for new raw contacts (identified by negative raw
-     * contact IDs) from the member Bundle of updated photos.
-     */
-    protected void removeNewRawContactPhotos() {
-        for (String key : mUpdatedPhotos.keySet()) {
-            try {
-                if (Integer.parseInt(key) < 0) {
-                    mUpdatedPhotos.remove(key);
-                }
-            } catch (NumberFormatException ignored) {
-            }
-        }
-    }
-
-    //
     // Utility methods
     //
 
@@ -1774,7 +1770,7 @@ abstract public class ContactEditorBaseFragment extends Fragment implements
             return ContentUris.withAppendedId(legacyContentUri, contactId);
         }
         // Otherwise pass back a lookup-style Uri
-        return contactLookupUri;
+        return contactLookupUri == null? requestLookupUri : contactLookupUri;
     }
 
     /**

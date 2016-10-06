@@ -1,4 +1,14 @@
 LOCAL_PATH:= $(call my-dir)
+
+#MAKE_JAR
+include $(CLEAR_VARS)
+LOCAL_SRC_FILES := $(call all-java-files-under, src-Wrapper)
+LOCAL_JAVA_LIBRARIES := telephony-common
+LOCAL_MODULE := phonebook_wrapper
+LOCAL_MODULE_TAGS := optional
+LOCAL_CERTIFICATE := platform
+include $(BUILD_STATIC_JAVA_LIBRARY)
+
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_TAGS := optional
@@ -6,44 +16,42 @@ LOCAL_MODULE_TAGS := optional
 contacts_common_dir := ../ContactsCommon
 phone_common_dir := ../PhoneCommon
 
-src_dirs := src $(contacts_common_dir)/src \
-    $(phone_common_dir)/src \
-    $(phone_common_dir)/src-ambient
+ifeq ($(TARGET_BUILD_APPS),)
+support_library_root_dir := frameworks/support
+else
+support_library_root_dir := prebuilts/sdk/current/support
+endif
 
+src_dirs := src $(contacts_common_dir)/src $(phone_common_dir)/src
 res_dirs := res $(contacts_common_dir)/res $(phone_common_dir)/res
+asset_dirs := $(contacts_common_dir)/assets
+
+src_dirs += src-N $(contacts_common_dir)/src-N $(phone_common_dir)/src-N
 
 LOCAL_SRC_FILES := $(call all-java-files-under, $(src_dirs))
+LOCAL_SRC_FILES += src/org/codeaurora/presenceserv/IPresenceService.aidl \
+                   src/org/codeaurora/presenceserv/IPresenceServiceCB.aidl
+
 LOCAL_RESOURCE_DIR := $(addprefix $(LOCAL_PATH)/, $(res_dirs)) \
-    frameworks/support/v7/cardview/res \
-    external/uicommon/res
+    $(support_library_root_dir)/v7/cardview/res
+LOCAL_ASSET_DIR := $(addprefix $(LOCAL_PATH)/, $(asset_dirs))
 
 LOCAL_AAPT_FLAGS := \
     --auto-add-overlay \
     --extra-packages com.android.contacts.common \
     --extra-packages com.android.phone.common \
-    --extra-packages android.support.v7.cardview \
-    --extra-packages com.cyanogen.ambient \
-    --extra-packages com.cyngn.uicommon
+    --extra-packages android.support.v7.cardview
 
-LOCAL_JAVA_LIBRARIES := telephony-common voip-common ims-common
-LOCAL_FULL_LIBS_MANIFEST_FILES := $(LOCAL_PATH)/AndroidManifest_cm.xml
 LOCAL_STATIC_JAVA_LIBRARIES := \
     com.android.vcard \
     android-common \
-    uicommon \
     guava \
     android-support-v13 \
     android-support-v7-cardview \
     android-support-v7-palette \
     android-support-v4 \
     libphonenumber \
-    libSudaPinYin \
-    libSudaLocation \
-    libSudaSdk \
-    libOkHttp \
-    libOKIO \
-    org.cyanogenmod.platform.sdk \
-    contacts-picaso
+    phonebook_wrapper
 
 LOCAL_PACKAGE_NAME := Contacts
 LOCAL_CERTIFICATE := shared
@@ -51,9 +59,8 @@ LOCAL_PRIVILEGED_MODULE := true
 
 LOCAL_PROGUARD_FLAG_FILES := proguard.flags
 
-# utilize ContactsCommon's phone-number-based contact-info lookup
-CONTACTS_COMMON_LOOKUP_PROVIDER ?= $(LOCAL_PATH)/$(contacts_common_dir)/info_lookup
-include $(CONTACTS_COMMON_LOOKUP_PROVIDER)/phonenumber_lookup_provider.mk
+LOCAL_SDK_VERSION := current
+LOCAL_MIN_SDK_VERSION := 21
 
 include $(BUILD_PACKAGE)
 

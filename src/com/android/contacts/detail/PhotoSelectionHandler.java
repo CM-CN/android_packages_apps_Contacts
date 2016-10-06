@@ -16,10 +16,10 @@
 
 package com.android.contacts.detail;
 
-import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -61,14 +61,13 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
     private static final int REQUEST_CODE_CAMERA_WITH_DATA = 1001;
     private static final int REQUEST_CODE_PHOTO_PICKED_WITH_DATA = 1002;
     private static final int REQUEST_CROP_PHOTO = 1003;
-    private static final int REQUEST_CODE_STORAGE_PERMISSION = 1004;
 
     // Height and width (in pixels) to request for the photo - queried from the provider.
     private static int mPhotoDim;
     // Default photo dimension to use if unable to query the provider.
     private static final int mDefaultPhotoDim = 720;
 
-    protected final Activity mActivity;
+    protected final Context mContext;
     private final View mChangeAnchorView;
     private final int mPhotoMode;
     private final int mPhotoPickSize;
@@ -78,13 +77,13 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
     private final boolean mIsDirectoryContact;
     private ListPopupWindow mPopup;
 
-    public PhotoSelectionHandler(Activity activity, View changeAnchorView, int photoMode,
+    public PhotoSelectionHandler(Context context, View changeAnchorView, int photoMode,
             boolean isDirectoryContact, RawContactDeltaList state) {
-        mActivity = activity;
+        mContext = context;
         mChangeAnchorView = changeAnchorView;
         mPhotoMode = photoMode;
-        mTempPhotoUri = ContactPhotoUtils.generateTempImageUri(mActivity);
-        mCroppedPhotoUri = ContactPhotoUtils.generateTempCroppedImageUri(mActivity);
+        mTempPhotoUri = ContactPhotoUtils.generateTempImageUri(context);
+        mCroppedPhotoUri = ContactPhotoUtils.generateTempCroppedImageUri(mContext);
         mIsDirectoryContact = isDirectoryContact;
         mState = state;
         mPhotoPickSize = getPhotoPickSize();
@@ -102,7 +101,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
         if (listener != null) {
             if (getWritableEntityIndex() != -1) {
                 mPopup = PhotoActionPopup.createPopupMenu(
-                        mActivity, mChangeAnchorView, listener, mPhotoMode);
+                        mContext, mChangeAnchorView, listener, mPhotoMode);
                 mPopup.setOnDismissListener(new OnDismissListener() {
                     @Override
                     public void onDismiss() {
@@ -137,7 +136,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
 
                     try {
                         // delete the original temporary photo if it exists
-                        mActivity.getContentResolver().delete(mTempPhotoUri, null, null);
+                        mContext.getContentResolver().delete(mTempPhotoUri, null, null);
                         listener.onPhotoSelected(uri);
                         return true;
                     } catch (FileNotFoundException e) {
@@ -165,7 +164,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
                     } else {
                         toCrop = mTempPhotoUri;
                         try {
-                            if (!ContactPhotoUtils.savePhotoFromUriToUri(mActivity, uri,
+                            if (!ContactPhotoUtils.savePhotoFromUriToUri(mContext, uri,
                                             toCrop, false)) {
                                 return false;
                             }
@@ -183,28 +182,13 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
     }
 
     /**
-     * Implements {@link Activity#onRequestPermissionsResult(int, String[], int[])}
-     */
-    public void onRequestPermissionsResult(int requestCode, String permissions[],
-                                           int[] grantResults) {
-        switch (requestCode) {
-            case REQUEST_CODE_STORAGE_PERMISSION:
-                if (grantResults.length > 0
-                        && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    startPickFromGalleryActivity(mTempPhotoUri);
-                }
-                break;
-        }
-    }
-
-    /**
      * Return the index of the first entity in the contact data that belongs to a contact-writable
      * account, or -1 if no such entity exists.
      */
     private int getWritableEntityIndex() {
         // Directory entries are non-writable.
         if (mIsDirectoryContact) return -1;
-        return mState.indexOfFirstWritableRawContact(mActivity);
+        return mState.indexOfFirstWritableRawContact(mContext);
     }
 
     /**
@@ -236,7 +220,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
             final ContentValues entityValues = delta.getValues().getCompleteValues();
             final String type = entityValues.getAsString(RawContacts.ACCOUNT_TYPE);
             final String dataSet = entityValues.getAsString(RawContacts.DATA_SET);
-            final AccountType accountType = AccountTypeManager.getInstance(mActivity).getAccountType(
+            final AccountType accountType = AccountTypeManager.getInstance(mContext).getAccountType(
                         type, dataSet);
 
             final ValuesDelta child = RawContactModifier.ensureKindExists(
@@ -262,7 +246,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
                 getListener().onPhotoSelected(inputUri);
             } catch (FileNotFoundException e) {
                 Log.e(TAG, "Cannot save uncropped photo", e);
-                Toast.makeText(mActivity, R.string.contactPhotoSavedErrorToast,
+                Toast.makeText(mContext, R.string.contactPhotoSavedErrorToast,
                         Toast.LENGTH_LONG).show();
             }
             return;
@@ -272,7 +256,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
             startPhotoActivity(intent, REQUEST_CROP_PHOTO, inputUri);
         } catch (Exception e) {
             Log.e(TAG, "Cannot crop image", e);
-            Toast.makeText(mActivity, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
+            Toast.makeText(mContext, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
         }
     }
 
@@ -304,7 +288,7 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
         }
 
         // Note that this URI is safe to call on the UI thread.
-        Cursor c = mActivity.getContentResolver().query(DisplayPhoto.CONTENT_MAX_DIMENSIONS_URI,
+        Cursor c = mContext.getContentResolver().query(DisplayPhoto.CONTENT_MAX_DIMENSIONS_URI,
                 new String[]{DisplayPhoto.DISPLAY_MAX_DIM}, null, null, null);
         if (c != null) {
             try {
@@ -331,14 +315,14 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
      * Constructs an intent for picking a photo from Gallery, and returning the bitmap.
      */
     private Intent getPhotoPickIntent(Uri outputUri) {
-        final Intent intent = new Intent(Intent.ACTION_GET_CONTENT, null);
+        final Intent intent = new Intent(Intent.ACTION_PICK, null);
         intent.setType("image/*");
         ContactPhotoUtils.addPhotoPickerExtras(intent, outputUri);
         return intent;
     }
 
     private boolean hasIntentHandler(Intent intent) {
-        final List<ResolveInfo> resolveInfo = mActivity.getPackageManager()
+        final List<ResolveInfo> resolveInfo = mContext.getPackageManager()
                 .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
         return resolveInfo != null && resolveInfo.size() > 0;
     }
@@ -367,27 +351,18 @@ public abstract class PhotoSelectionHandler implements OnClickListener {
                 startTakePhotoActivity(mTempPhotoUri);
             } catch (ActivityNotFoundException e) {
                 Toast.makeText(
-                        mActivity, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
+                        mContext, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
             }
         }
 
         @Override
         public void onPickFromGalleryChosen() {
-            // Get storage permission first.
-            if (mActivity.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-                    != PackageManager.PERMISSION_GRANTED) {
-                mActivity.requestPermissions(
-                        new String[]{ Manifest.permission.READ_EXTERNAL_STORAGE },
-                        REQUEST_CODE_STORAGE_PERMISSION);
-                return;
-            }
-
             try {
                 // Launch picker to choose photo for selected contact
                 startPickFromGalleryActivity(mTempPhotoUri);
             } catch (ActivityNotFoundException e) {
                 Toast.makeText(
-                        mActivity, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
+                        mContext, R.string.photoPickerNotFoundText, Toast.LENGTH_LONG).show();
             }
         }
 

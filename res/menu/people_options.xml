@@ -33,6 +33,10 @@
         android:title="@string/menu_clear_frequents" />
 
     <item
+        android:id="@+id/menu_blocked_numbers"
+        android:title="@string/menu_blocked_numbers"/>
+
+    <item
         android:id="@+id/menu_accounts"
         android:title="@string/menu_accounts" />
 
@@ -45,8 +49,8 @@
         android:title="@string/menu_new_group_action_bar" />
 
     <item
-        android:id="@+id/menu_memory_status"
-        android:title="@string/menu_memory_status" />
+        android:id="@+id/menu_merge_contacts"
+        android:title="@string/merge_contacts" />
 
     <item
         android:id="@+id/menu_help"

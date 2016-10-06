@@ -23,9 +23,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.android.contacts.common.R;
 import com.android.contacts.common.testing.NeededForTesting;
 import com.android.contacts.common.model.AccountTypeManager;
 import com.android.contacts.common.model.account.AccountType;
@@ -42,6 +44,7 @@ import java.util.Set;
 /**
  * Utility methods for the "account changed" notification in the new contact creation flow.
  */
+@NeededForTesting
 public class ContactEditorUtils {
     private static final String TAG = "ContactEditorUtils";
 
@@ -49,6 +52,9 @@ public class ContactEditorUtils {
     private static final String KEY_KNOWN_ACCOUNTS = "ContactEditorUtils_known_accounts";
     // Key to tell the first time launch.
     private static final String KEY_ANYTHING_SAVED = "ContactEditorUtils_anything_saved";
+    private static final int DEFAULT_STORAGE_PHONE = 0;
+    private static final int DEFAULT_STORAGE_SIM_1 = 1;
+    private static final int DEFAULT_STORAGE_SIM_2 = 2;
 
     private static final List<AccountWithDataSet> EMPTY_ACCOUNTS = ImmutableList.of();
 
@@ -57,6 +63,9 @@ public class ContactEditorUtils {
     private final Context mContext;
     private final SharedPreferences mPrefs;
     private final AccountTypeManager mAccountTypes;
+    private final String mDefaultAccountKey;
+    // Key to tell the first time launch.
+    private final String mAnythingSavedKey;
 
     private ContactEditorUtils(Context context) {
         this(context, AccountTypeManager.getInstance(context));
@@ -65,8 +74,12 @@ public class ContactEditorUtils {
     @VisibleForTesting
     ContactEditorUtils(Context context, AccountTypeManager accountTypes) {
         mContext = context.getApplicationContext();
-        mPrefs = PreferenceManager.getDefaultSharedPreferences(mContext);
+        mPrefs = mContext.getSharedPreferences(context.getPackageName(), Context.MODE_PRIVATE);
         mAccountTypes = accountTypes;
+        mDefaultAccountKey = mContext.getResources().getString(
+                R.string.contact_editor_default_account_key);
+        mAnythingSavedKey = mContext.getResources().getString(
+                R.string.contact_editor_anything_saved_key);
     }
 
     public static synchronized ContactEditorUtils getInstance(Context context) {
@@ -78,21 +91,21 @@ public class ContactEditorUtils {
 
     @NeededForTesting
     void cleanupForTest() {
-        mPrefs.edit().remove(KEY_DEFAULT_ACCOUNT).remove(KEY_KNOWN_ACCOUNTS)
-                .remove(KEY_ANYTHING_SAVED).apply();
+        mPrefs.edit().remove(mDefaultAccountKey).remove(KEY_KNOWN_ACCOUNTS)
+                .remove(mAnythingSavedKey).apply();
     }
 
     @NeededForTesting
     void removeDefaultAccountForTest() {
-        mPrefs.edit().remove(KEY_DEFAULT_ACCOUNT).apply();
+        mPrefs.edit().remove(mDefaultAccountKey).apply();
     }
 
     /**
-     * Sets the {@link #KEY_KNOWN_ACCOUNTS} and {@link #KEY_DEFAULT_ACCOUNT} preference values to
+     * Sets the {@link #KEY_KNOWN_ACCOUNTS} and {@link #mDefaultAccountKey} preference values to
      * empty strings to reset the state of the preferences file.
      */
     private void resetPreferenceValues() {
-        mPrefs.edit().putString(KEY_KNOWN_ACCOUNTS, "").putString(KEY_DEFAULT_ACCOUNT, "").apply();
+        mPrefs.edit().putString(KEY_KNOWN_ACCOUNTS, "").putString(mDefaultAccountKey, "").apply();
     }
 
     private List<AccountWithDataSet> getWritableAccounts() {
@@ -104,7 +117,7 @@ public class ContactEditorUtils {
      *     been called.
      */
     private boolean isFirstLaunch() {
-        return !mPrefs.getBoolean(KEY_ANYTHING_SAVED, false);
+        return !mPrefs.getBoolean(mAnythingSavedKey, false);
     }
 
     /**
@@ -116,25 +129,65 @@ public class ContactEditorUtils {
      * @param defaultAccount the account used to save a newly created contact.  Or pass {@code null}
      *     If the user selected "local only".
      */
+    @NeededForTesting
     public void saveDefaultAndAllAccounts(AccountWithDataSet defaultAccount) {
         final SharedPreferences.Editor editor = mPrefs.edit()
-                .putBoolean(KEY_ANYTHING_SAVED, true);
+                .putBoolean(mAnythingSavedKey, true);
 
         if (defaultAccount == null || defaultAccount.isLocalAccount()) {
             // If the default is "local only", there should be no writable accounts.
             // This should always be the case with our spec, but because we load the account list
             // asynchronously using a worker thread, it is possible that there are accounts at this
             // point. So if the default is null always clear the account list.
-            editor.putString(KEY_KNOWN_ACCOUNTS, "");
-            editor.putString(KEY_DEFAULT_ACCOUNT, "");
+            editor.remove(KEY_KNOWN_ACCOUNTS);
+            editor.remove(mDefaultAccountKey);
         } else {
             editor.putString(KEY_KNOWN_ACCOUNTS,
                     AccountWithDataSet.stringifyList(getWritableAccounts()));
-            editor.putString(KEY_DEFAULT_ACCOUNT, defaultAccount.stringify());
+            editor.putString(mDefaultAccountKey, defaultAccount.stringify());
         }
         editor.apply();
     }
 
+    private AccountWithDataSet getOverlayDefualtAccount() {
+        // if set the value of store contacts defalut
+        if (mContext.getResources().getBoolean(R.bool.def_storage_behavior_enabled)) {
+            List<AccountWithDataSet> accounts = getWritableAccounts();
+            if (accounts != null && accounts.size() != 0) {
+                String name = "";
+                String type = "";
+                // default Contacts storage postion
+                int store_pos = mContext.getResources().getInteger(R.integer.def_storage_position);
+                switch (store_pos) {
+                    case DEFAULT_STORAGE_PHONE:
+                        name = SimContactsConstants.PHONE_NAME;
+                        type = SimContactsConstants.ACCOUNT_TYPE_PHONE;
+                        break;
+                    case DEFAULT_STORAGE_SIM_1:
+                         TelephonyManager tm = (TelephonyManager) mContext.getSystemService(
+                                 Context.TELEPHONY_SERVICE);
+                        name = tm.getPhoneCount() > 1 ?
+                                SimContactsConstants.SIM_NAME_1 : SimContactsConstants.SIM_NAME;
+                        type = SimContactsConstants.ACCOUNT_TYPE_SIM;
+                        break;
+                    case DEFAULT_STORAGE_SIM_2:
+                        name = SimContactsConstants.SIM_NAME_2;
+                        type = SimContactsConstants.ACCOUNT_TYPE_SIM;
+                        break;
+                    default:
+                        Log.e(TAG, "Bad default contacts storage position," +
+                                " def_storage_position is " + store_pos);
+                    break;
+                }
+                for (AccountWithDataSet account : accounts) {
+                    if (name.equals(account.name) && type.equals(account.type)) {
+                        return account;
+                    }
+                }
+            }
+        }
+        return null;
+    }
     /**
      * @return the default account saved with {@link #saveDefaultAndAllAccounts}.
      *
@@ -145,6 +198,17 @@ public class ContactEditorUtils {
      * Also note that the returned account may have been removed already.
      */
     public AccountWithDataSet getDefaultAccount() {
+
+        AccountWithDataSet overlayDefaultAccount = getOverlayDefualtAccount();
+        if (overlayDefaultAccount != null) {
+            return overlayDefaultAccount;
+        }
+
+        final List<AccountWithDataSet> currentWritableAccounts = getWritableAccounts();
+        if (currentWritableAccounts.size() == 1) {
+            return currentWritableAccounts.get(0);
+        }
+
         final String saved = mPrefs.getString(KEY_DEFAULT_ACCOUNT, null);
         if (TextUtils.isEmpty(saved)) {
             return null;
@@ -195,7 +259,6 @@ public class ContactEditorUtils {
     /**
      * @return true if the contact editor should show the "accounts changed" notification, that is:
      * - If it's the first launch.
-     * - Or, if an account has been added.
      * - Or, if the default account has been removed.
      * (And some extra sanity check)
      *
@@ -203,19 +266,18 @@ public class ContactEditorUtils {
      * {@link #getDefaultAccount} will return a valid account.  (Either an account which still
      * exists, or {@code null} which should be interpreted as "local only".)
      */
+    @NeededForTesting
     public boolean shouldShowAccountChangedNotification() {
+        // If default account is defined, accounts change should not show.
+        final AccountWithDataSet overlayDefaultAccount = getOverlayDefualtAccount();
+        if (overlayDefaultAccount != null) {
+            return false;
+        }
         if (isFirstLaunch()) {
             return true;
         }
 
-        // Account added?
-        final List<AccountWithDataSet> savedAccounts = getSavedAccounts();
         final List<AccountWithDataSet> currentWritableAccounts = getWritableAccounts();
-        for (AccountWithDataSet account : currentWritableAccounts) {
-            if (!savedAccounts.contains(account)) {
-                return true; // New account found.
-            }
-        }
 
         final AccountWithDataSet defaultAccount = getDefaultAccount();
 

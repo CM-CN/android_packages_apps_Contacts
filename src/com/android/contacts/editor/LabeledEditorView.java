@@ -50,6 +50,7 @@ import com.android.contacts.common.model.ValuesDelta;
 import com.android.contacts.common.model.RawContactModifier;
 import com.android.contacts.common.model.account.AccountType.EditType;
 import com.android.contacts.common.model.dataitem.DataKind;
+import com.android.contacts.common.model.account.SimAccountType;
 import com.android.contacts.util.DialogManager;
 import com.android.contacts.util.DialogManager.DialogShowingView;
 
@@ -79,8 +80,6 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
     private boolean mWasEmpty = true;
     private boolean mIsDeletable = true;
     private boolean mIsAttachedToWindow;
-    private boolean mHideTypeInitially;
-    private boolean mHasTypes;
 
     private EditType mType;
 
@@ -139,6 +138,7 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
         // Turn off the Spinner's own state management. We do this ourselves on rotation
         mLabel.setId(View.NO_ID);
         mLabel.setOnItemSelectedListener(mSpinnerListener);
+        ViewSelectedFilter.suppressViewSelectedEvent(mLabel);
 
         mDelete = (ImageView) findViewById(R.id.delete_button);
         mDeleteContainer = findViewById(R.id.delete_button_container);
@@ -233,42 +233,17 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
         }
     }
 
+    private boolean isSimAccount() {
+        if (mState != null && mState.getAccountType() != null
+                && mState.getAccountType().equals(SimAccountType.ACCOUNT_TYPE)) {
+            return true;
+        }
+        return false;
+    }
+
     public void setDeleteButtonVisible(boolean visible) {
         if (mIsDeletable) {
             mDeleteContainer.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-        }
-    }
-
-    /**
-     * Whether to hide the type dropdown after values have been set.
-     * By default the drop down is always displayed if there are types to display.
-     */
-    public void setHideTypeInitially(boolean hideTypeInitially) {
-        mHideTypeInitially = hideTypeInitially;
-    }
-
-    /**
-     * Whether the type drop down is visible.
-     */
-    public boolean isTypeVisible() {
-        return mLabel == null ? false : mLabel.getVisibility() == View.VISIBLE;
-    }
-
-    /**
-     * Makes the type drop down visible if it is not already so, and there are types to display.
-     */
-    public void showType() {
-        if (mHasTypes && mLabel != null && mLabel.getVisibility() != View.VISIBLE) {
-            EditorAnimator.getInstance().slideAndFadeIn(mLabel, mLabel.getHeight());
-        }
-    }
-
-    /**
-     * Hides the type drop down if there are types to display and it is not already hidden.
-     */
-    public void hideType() {
-        if (mHasTypes && mLabel != null && mLabel.getVisibility() != View.GONE) {
-            EditorAnimator.getInstance().hideEditorView(mLabel);
         }
     }
 
@@ -329,8 +304,23 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
         mLabel.setAdapter(mEditTypeAdapter);
         if (mEditTypeAdapter.hasCustomSelection()) {
             mLabel.setSelection(mEditTypeAdapter.getPosition(CUSTOM_SELECTION));
+            mDeleteContainer.setContentDescription(
+                    getContext().getString(R.string.editor_delete_view_description,
+                            mEntry.getAsString(mType.customColumn),
+                            getContext().getString(mKind.titleRes)));
         } else {
             mLabel.setSelection(mEditTypeAdapter.getPosition(mType));
+            if (mType != null) {
+                mDeleteContainer.setContentDescription(
+                        getContext().getString(R.string.editor_delete_view_description,
+                                getContext().getString(mType.labelRes),
+                                getContext().getString(mKind.titleRes)));
+            } else {
+                mDeleteContainer.setContentDescription(
+                        getContext().getString(R.string.editor_delete_view_description_short,
+                                getContext().getString(mKind.titleRes)));
+            }
+
         }
     }
 
@@ -378,6 +368,11 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
                 if (mIsDeletable) mDeleteContainer.setVisibility(View.VISIBLE);
             }
             mWasEmpty = isEmpty;
+
+            // Update the label text color
+            if (mEditTypeAdapter != null) {
+                mEditTypeAdapter.notifyDataSetChanged();
+            }
         }
     }
 
@@ -417,15 +412,14 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
         setVisibility(View.VISIBLE);
 
         // Display label selector if multiple types available
-        mHasTypes = RawContactModifier.hasEditTypes(kind);
-        setupLabelButton(mHasTypes);
+        final boolean hasTypes = RawContactModifier.hasEditTypes(kind) && !isSimAccount();
+        setupLabelButton(hasTypes);
         mLabel.setEnabled(!readOnly && isEnabled());
-        if (mHasTypes) {
+        mLabel.setContentDescription(getContext().getResources().getString(mKind.titleRes));
+
+        if (hasTypes) {
             mType = RawContactModifier.getCurrentType(entry, kind);
             rebuildLabel();
-            if (mHideTypeInitially) {
-                mLabel.setVisibility(View.GONE);
-            }
         }
     }
 
@@ -459,7 +453,7 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
                 final String customText = editText.getText().toString().trim();
                 if (ContactsUtils.isGraphic(customText)) {
                     final List<EditType> allTypes =
-                            RawContactModifier.getValidTypes(mState, mKind, null);
+                            RawContactModifier.getValidTypes(mState, mKind, null, true, null, true);
                     mType = null;
                     for (EditType editType : allTypes) {
                         if (editType.customColumn != null) {
@@ -599,7 +593,7 @@ public abstract class LabeledEditorView extends LinearLayout implements Editor, 
                 }
             }
 
-            addAll(RawContactModifier.getValidTypes(mState, mKind, mType));
+            addAll(RawContactModifier.getValidTypes(mState, mKind, mType, true, null, false));
         }
 
         public boolean hasCustomSelection() {
