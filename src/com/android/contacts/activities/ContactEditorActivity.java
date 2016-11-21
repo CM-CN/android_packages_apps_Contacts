@@ -16,7 +16,6 @@
 
 package com.android.contacts.activities;
 
-import android.app.Fragment;
 import com.android.contacts.R;
 import com.android.contacts.common.activity.RequestPermissionsActivity;
 import com.android.contacts.editor.ContactEditorFragment;
@@ -50,23 +49,5 @@ public class ContactEditorActivity extends ContactEditorBaseActivity
         final Uri uri = ContactEditorBaseActivity.ACTION_EDIT.equals(action)
                 || Intent.ACTION_EDIT.equals(action) ? getIntent().getData() : null;
         mFragment.load(action, uri, getIntent().getExtras());
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (mFragment != null) {
-            mFragment.save(ContactEditor.SaveMode.COMPACT, /* backPressed =*/ true);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions,
-                                           int[] grantResults) {
-        if (mFragment != null) {
-            ((Fragment) mFragment).onRequestPermissionsResult(
-                    requestCode, permissions, grantResults);
-        } else {
-            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        }
     }
 }

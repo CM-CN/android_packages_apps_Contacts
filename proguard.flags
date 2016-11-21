@@ -1,8 +1,3 @@
--dontwarn com.cyanogen.**
--dontwarn com.cyngn.**
--dontwarn com.squareup.**
--dontwarn com.squareup.okhttp.**
-
 -keep class com.android.contacts.model.Sources {
   public <init>(...);
 }
@@ -14,6 +9,16 @@
   public void *(android.view.MenuItem);
 }
 
+-keep class com.android.contacts.common.** { *;}
+# For test:
+-keep class com.android.contacts.commonbind.analytics.AnalyticsUtil { *;}
+-keep class com.android.contacts.interactions.** { *;}
+-keep class com.google.common.base.Objects { *;}
+-keep class com.google.common.base.Preconditions { *;}
+-keep class com.google.common.collect.Lists { *;}
+-keep class com.google.common.collect.Maps { *;}
+-keep class com.google.common.collect.Sets { *;}
+
 # Any class or method annotated with NeededForTesting or NeededForReflection.
 -keep @com.android.contacts.common.testing.NeededForTesting class *
 -keep @com.android.contacts.test.NeededForReflection class *
@@ -21,11 +26,10 @@
 @com.android.contacts.common.testing.NeededForTesting *;
 @com.android.contacts.test.NeededForReflection *;
 }
+# Keep classes and methods that have the guava @VisibleForTesting annotation
+-keep @com.google.common.annotations.VisibleForTesting class *
+-keepclassmembers class * {
+  @com.google.common.annotations.VisibleForTesting *;
+}
 
 -verbose
-
--dontwarn org.apache.http.**
--dontwarn android.net.http.**
--dontwarn com.android.volley.toolbox.**
--dontwarn org.codehaus.mojo.animal_sniffer.**
--dontwarn okio.**

@@ -21,27 +21,28 @@ import android.app.Fragment;
 import android.app.FragmentManager;
 import android.app.FragmentTransaction;
 import android.content.ActivityNotFoundException;
-import android.content.ComponentName;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.content.Intent;
-import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.database.Cursor;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Parcelable;
-import android.os.UserManager;
-import android.preference.PreferenceActivity;
+import android.provider.BlockedNumberContract;
 import android.provider.ContactsContract;
 import android.provider.ContactsContract.Contacts;
 import android.provider.ContactsContract.ProviderStatus;
+import android.provider.ContactsContract.QuickContact;
 import android.provider.Settings;
-import android.preference.PreferenceManager;
 import android.support.v13.app.FragmentPagerAdapter;
 import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
+import android.telecom.TelecomManager;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.KeyCharacterMap;
@@ -57,22 +58,18 @@ import android.widget.Toast;
 import android.widget.Toolbar;
 
 import com.android.contacts.ContactsActivity;
-import com.android.contacts.incall.InCallMetricsHelper;
-import com.android.contacts.incall.InCallPluginInfo;
 import com.android.contacts.R;
 import com.android.contacts.activities.ActionBarAdapter.TabState;
 import com.android.contacts.common.ContactsUtils;
 import com.android.contacts.common.activity.RequestPermissionsActivity;
+import com.android.contacts.common.compat.TelecomManagerUtil;
 import com.android.contacts.common.dialog.ClearFrequentsDialog;
-import com.android.contacts.common.util.ImplicitIntentsUtil;
-import com.android.contacts.common.widget.FloatingActionButtonController;
-import com.android.contacts.editor.EditorIntents;
-import com.android.contacts.common.editor.SelectAccountDialogFragment;
+
 import com.android.contacts.group.GroupBrowseListFragment;
 import com.android.contacts.group.GroupBrowseListFragment.OnGroupBrowserActionListener;
 import com.android.contacts.group.GroupDetailFragment;
-import com.android.contacts.incall.InCallPluginUtils;
-import com.android.contacts.interactions.ContactDeletionInteraction;
+
+import com.android.contacts.common.editor.SelectAccountDialogFragment;
 import com.android.contacts.common.interactions.ImportExportDialogFragment;
 import com.android.contacts.common.interactions.ImportExportDialogFragment.ExportToSimThread;
 import com.android.contacts.common.list.AccountFilterActivity;
@@ -80,47 +77,45 @@ import com.android.contacts.common.list.ContactEntryListFragment;
 import com.android.contacts.common.list.ContactListFilter;
 import com.android.contacts.common.list.ContactListFilterController;
 import com.android.contacts.common.list.ContactTileAdapter.DisplayType;
+import com.android.contacts.common.list.DirectoryListLoader;
+import com.android.contacts.common.list.ViewPagerTabs;
+import com.android.contacts.common.logging.Logger;
+import com.android.contacts.common.logging.ScreenEvent.ScreenType;
+import com.android.contacts.common.preference.ContactsPreferenceActivity;
+import com.android.contacts.common.util.AccountFilterUtil;
+import com.android.contacts.common.util.Constants;
+import com.android.contacts.common.util.ImplicitIntentsUtil;
+import com.android.contacts.common.util.ViewUtil;
+import com.android.contacts.common.widget.FloatingActionButtonController;
+import com.android.contacts.editor.EditorIntents;
+import com.android.contacts.interactions.ContactDeletionInteraction;
 import com.android.contacts.interactions.ContactMultiDeletionInteraction;
 import com.android.contacts.interactions.ContactMultiDeletionInteraction.MultiContactDeleteListener;
 import com.android.contacts.interactions.JoinContactsDialogFragment;
 import com.android.contacts.interactions.JoinContactsDialogFragment.JoinContactsListener;
-import com.android.contacts.list.MultiSelectContactsListFragment;
-import com.android.contacts.list.MultiSelectContactsListFragment.OnCheckBoxListActionListener;
 import com.android.contacts.list.ContactTileListFragment;
 import com.android.contacts.list.ContactsIntentResolver;
 import com.android.contacts.list.ContactsRequest;
 import com.android.contacts.list.ContactsUnavailableFragment;
-import com.android.contacts.common.list.DirectoryListLoader;
-import com.android.contacts.common.preference.DisplayOptionsPreferenceFragment;
+import com.android.contacts.list.MultiSelectContactsListFragment;
+import com.android.contacts.list.MultiSelectContactsListFragment.OnCheckBoxListActionListener;
 import com.android.contacts.list.OnContactBrowserActionListener;
 import com.android.contacts.list.OnContactsUnavailableActionListener;
 import com.android.contacts.list.ProviderStatusWatcher;
 import com.android.contacts.list.ProviderStatusWatcher.ProviderStatusListener;
-import com.android.contacts.common.list.ViewPagerTabs;
-import com.android.contacts.list.PluginContactBrowseListFragment;
-import com.android.contacts.preference.ContactsPreferenceActivity;
-import com.android.contacts.common.SimContactsConstants;
-import com.android.contacts.common.util.AccountFilterUtil;
-import com.android.contacts.common.util.ViewUtil;
 import com.android.contacts.quickcontact.QuickContactActivity;
-import com.android.contacts.util.AccountPromptUtils;
-import com.android.contacts.common.util.Constants;
+import com.android.contacts.common.model.account.AccountType;
+import com.android.contacts.common.SimContactsConstants;
 import com.android.contacts.common.vcard.ExportVCardActivity;
 import com.android.contacts.common.vcard.VCardCommonArguments;
 import com.android.contacts.util.DialogManager;
+import com.android.contacts.util.PhoneCapabilityTester;
 import com.android.contactsbind.HelpUtils;
-import com.android.phone.common.incall.ContactsDataSubscription;
-import com.android.phone.common.incall.CallMethodInfo;
-import com.android.phone.common.incall.utils.CallMethodFilters;
-import com.android.phone.common.incall.utils.CallMethodUtils;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -138,10 +133,10 @@ public class PeopleActivity extends ContactsActivity implements
         JoinContactsListener {
 
     private static final String TAG = "PeopleActivity";
-    private static final boolean DEBUG = false;
 
-    public static String EDITABLE_KEY = "search_contacts";
     private static final String ENABLE_DEBUG_OPTIONS_HIDDEN_CODE = "debug debug!";
+
+    private static final int MAX_CONTACTS_NUM_TO_MERGE_ONCE = 5;
 
     // These values needs to start at 2. See {@link ContactEntryListFragment}.
     private static final int SUBACTIVITY_ACCOUNT_FILTER = 2;
@@ -157,6 +152,7 @@ public class PeopleActivity extends ContactsActivity implements
     private GroupDetailFragment mGroupDetailFragment;
     private final GroupDetailFragmentListener mGroupDetailFragmentListener =
             new GroupDetailFragmentListener();
+    private View mFloatingActionButtonContainer;
     private boolean wasLastFabAnimationScaleIn = false;
 
     private ContactTileListFragment.Listener mFavoritesFragmentListener =
@@ -164,7 +160,7 @@ public class PeopleActivity extends ContactsActivity implements
 
     private ContactListFilterController mContactListFilterController;
 
-    private boolean mAccountUnavailable;
+    private ContactsUnavailableFragment mContactsUnavailableFragment;
     private ProviderStatusWatcher mProviderStatusWatcher;
     private Integer mProviderStatus;
 
@@ -176,26 +172,15 @@ public class PeopleActivity extends ContactsActivity implements
     private MultiSelectContactsListFragment mAllFragment;
     private ContactTileListFragment mFavoritesFragment;
     private GroupBrowseListFragment mGroupsFragment;
-    private ContactsUnavailableFragment mAllUnavailableFragment;
-    private ContactsUnavailableFragment mFavoritesUnavailableFragment;
-    private ContactsUnavailableFragment mGroupsUnavailableFragment;
-    private List<InCallPluginInfo> mPluginTabInfo = new ArrayList<InCallPluginInfo>();
-    private int mPluginLength;
-    private int mTabStateGroup = TabState.GROUPS;
 
     /** ViewPager for swipe */
     private ViewPager mTabPager;
     private ViewPagerTabs mViewPagerTabs;
     private TabPagerAdapter mTabPagerAdapter;
-    private List<TabEntry> mTabTitles;
-    private static final String CALL_METHOD_HELPER_SUBSCRIBER_ID = "PeopleActivity";
+    private String[] mTabTitles;
     private final TabPagerListener mTabPagerListener = new TabPagerListener();
-    private int mPageStateCount; // total number of pages
-    private boolean mEnableDebugMenuOptions;
 
-    /* Floating action button */
-    private View mFloatingActionButtonContainer;
-    private ImageButton mFloatingActionButton;
+    private boolean mEnableDebugMenuOptions;
 
     private ExportToSimThread mExportThread = null;
     /**
@@ -203,8 +188,6 @@ public class PeopleActivity extends ContactsActivity implements
      * This is set in {@link #onCreate} for later use in {@link #onStart}.
      */
     private boolean mIsRecreatedInstance;
-    // flag to track if the onResume cycle is directly from a configuration change
-    private boolean mConfigurationChanged;
 
     /**
      * If {@link #configureFragments(boolean)} is already called.  Used to avoid calling it twice
@@ -222,20 +205,17 @@ public class PeopleActivity extends ContactsActivity implements
     /** Sequential ID assigned to each instance; used for logging */
     private final int mInstanceId;
     private static final AtomicInteger sNextInstanceId = new AtomicInteger();
+
+    private ContactMultiDeletionInteraction mContactMultiDeletionInteraction;
+    private ContactMultiDeletionInteraction.DeleteContactsThread
+            mDeleteContactsThread;
+
     // TODO: we need to refactor the export code in future release.
     // QRD enhancement: contacts list for multi contact pick
     private ArrayList<String[]> mContactList;
 
     private BroadcastReceiver mExportToSimCompleteListener = null;
-
-    final String FAVORITE_TAG = "tab-pager-favorite";
-    final String ALL_TAG = "tab-pager-all";
-    final String GROUPS_TAG = "tab-pager-groups";
-    final String FAVORITE_UNAVAILABLE_TAG = "tab-pager-favorite-unav";
-    final String ALL_UNAVAILABLE_TAG = "tab-pager-all-unav";
-    final String GROUPS_UNAVAILABLE_TAG = "tab-pager-groups-unav";
-    private static final String KEY_PLUGIN_INFO_LIST = "pluginInfoList";
-    SharedPreferences mPrefs;
+    private static final int MAX_COUNT_ALLOW_SHARE_CONTACT = 2000;
 
     public PeopleActivity() {
         mInstanceId = sNextInstanceId.getAndIncrement();
@@ -250,16 +230,31 @@ public class PeopleActivity extends ContactsActivity implements
     }
 
     public boolean areContactsAvailable() {
-        return (mProviderStatus != null)
-                && mProviderStatus.equals(ProviderStatus.STATUS_NORMAL);
-    }
-
-    private boolean areContactWritableAccountsAvailable() {
-        return ContactsUtils.areContactWritableAccountsAvailable(this);
+        return (mProviderStatus != null) && mProviderStatus.equals(ProviderStatus.STATUS_NORMAL);
     }
 
     private boolean areGroupWritableAccountsAvailable() {
         return ContactsUtils.areGroupWritableAccountsAvailable(this);
+    }
+
+    /**
+     * Initialize fragments that are (or may not be) in the layout.
+     *
+     * For the fragments that are in the layout, we initialize them in
+     * {@link #createViewsAndFragments(Bundle)} after inflating the layout.
+     *
+     * However, the {@link ContactsUnavailableFragment} is a special fragment which may not
+     * be in the layout, so we have to do the initialization here.
+     *
+     * The ContactsUnavailableFragment is always created at runtime.
+     */
+    @Override
+    public void onAttachFragment(Fragment fragment) {
+        if (fragment instanceof ContactsUnavailableFragment) {
+            mContactsUnavailableFragment = (ContactsUnavailableFragment)fragment;
+            mContactsUnavailableFragment.setOnContactsUnavailableActionListener(
+                    new ContactsUnavailableFragmentListener());
+        }
     }
 
     @Override
@@ -268,7 +263,22 @@ public class PeopleActivity extends ContactsActivity implements
             Log.d(Constants.PERFORMANCE_TAG, "PeopleActivity.onCreate start");
         }
         super.onCreate(savedState);
-        mPrefs = PreferenceManager.getDefaultSharedPreferences(this);
+
+        // Get ContactMultiDeletionInteraction fragment from FragmentManager.
+        FragmentManager fm = getFragmentManager();
+        mContactMultiDeletionInteraction = (ContactMultiDeletionInteraction)fm
+                .findFragmentByTag("deleteMultipleContacts");
+
+        // Get the running delete thread.
+        if (mContactMultiDeletionInteraction != null) {
+            mDeleteContactsThread = mContactMultiDeletionInteraction
+                    .getDeleteContactsThread();
+        }
+
+        if (mDeleteContactsThread != null) {
+            mDeleteContactsThread.setActivity(this);
+        }
+
         if (RequestPermissionsActivity.startPermissionActivity(this)) {
             return;
         }
@@ -284,14 +294,13 @@ public class PeopleActivity extends ContactsActivity implements
         mProviderStatusWatcher.addListener(this);
 
         mIsRecreatedInstance = (savedState != null);
-        mConfigurationChanged = (savedState != null);
         createViewsAndFragments(savedState);
 
         if (Log.isLoggable(Constants.PERFORMANCE_TAG, Log.DEBUG)) {
             Log.d(Constants.PERFORMANCE_TAG, "PeopleActivity.onCreate finish");
         }
         getWindow().setBackgroundDrawable(null);
-        registerReceivers();
+        registerReceiver();
     }
 
     @Override
@@ -301,7 +310,7 @@ public class PeopleActivity extends ContactsActivity implements
             finish();
             return;
         }
-        mActionBarAdapter.initialize(null, mRequest, mPageStateCount);
+        mActionBarAdapter.initialize(null, mRequest);
 
         mContactListFilterController.checkFilterValidity(false);
 
@@ -311,7 +320,7 @@ public class PeopleActivity extends ContactsActivity implements
         invalidateOptionsMenuIfNeeded();
     }
 
-    private void registerReceivers() {
+    private void registerReceiver() {
         mExportToSimCompleteListener = new BroadcastReceiver() {
             public void onReceive(Context context, Intent intent) {
                 String action = intent.getAction();
@@ -321,7 +330,6 @@ public class PeopleActivity extends ContactsActivity implements
                 }
             }
         };
-
         IntentFilter exportCompleteFilter = new IntentFilter(
                 SimContactsConstants.INTENT_EXPORT_COMPLETE);
         registerReceiver(mExportToSimCompleteListener, exportCompleteFilter);
@@ -351,6 +359,7 @@ public class PeopleActivity extends ContactsActivity implements
         if (mRequest.getActionCode() == ContactsRequest.ACTION_VIEW_CONTACT) {
             final Intent intent = ImplicitIntentsUtil.composeQuickContactIntent(
                     mRequest.getContactUri(), QuickContactActivity.MODE_FULLY_EXPANDED);
+            intent.putExtra(QuickContactActivity.EXTRA_PREVIOUS_SCREEN_TYPE, ScreenType.UNKNOWN);
             ImplicitIntentsUtil.startActivityInApp(this, intent);
             return false;
         }
@@ -364,56 +373,15 @@ public class PeopleActivity extends ContactsActivity implements
 
         setContentView(R.layout.people_activity);
 
-        // Configure action button, need to initialize early before ViewPager sets the
-        // visibility depending on the fragment type
-        mFloatingActionButtonContainer = findViewById(R.id.floating_action_button_container);
-        mFloatingActionButton = (ImageButton) findViewById(R.id.floating_action_button);
-        mFloatingActionButton.setOnClickListener(this);
-        mFloatingActionButtonController = new FloatingActionButtonController(this,
-                mFloatingActionButtonContainer, mFloatingActionButton);
-
         final FragmentManager fragmentManager = getFragmentManager();
 
         // Hide all tabs (the current tab will later be reshown once a tab is selected)
         final FragmentTransaction transaction = fragmentManager.beginTransaction();
 
-        mTabTitles = new LinkedList<TabEntry>();
-        mTabTitles.add(TabState.FAVORITES, new TabEntry(FAVORITE_TAG, getString(R.string
-                .favorites_tab_label)));
-        mTabTitles.add(TabState.ALL, new TabEntry(ALL_TAG, getString(R.string
-                .all_contacts_tab_label)));
-        mTabTitles.add(TabState.GROUPS, new TabEntry(GROUPS_TAG, getString(R.string
-                .contacts_groups_label)));
-
-        if (savedState != null) {
-            // Reconstruct the plugin info list
-            List<InCallPluginInfo> restoreList = savedState.getParcelableArrayList
-                    (KEY_PLUGIN_INFO_LIST);
-            if (restoreList != null) {
-                mPluginTabInfo = restoreList;
-            }
-            mPluginLength = mPluginTabInfo.size();
-            for (int i = 0; i < mPluginLength; i++) {
-                InCallPluginInfo pluginInfo = mPluginTabInfo.get(i);
-                mCallMethodMap.put(pluginInfo.mCallMethodInfo.mComponent, pluginInfo
-                        .mCallMethodInfo);
-                mTabTitles.add(TabState.GROUPS + i, new TabEntry(pluginInfo.mTabTag,
-                        pluginInfo.mCallMethodInfo.mName));
-                pluginInfo.mFragment = (PluginContactBrowseListFragment) fragmentManager
-                        .findFragmentByTag(pluginInfo.mTabTag);
-                pluginInfo.mFragment.setOnContactListActionListener
-                        (new PluginContactBrowserActionListener());
-                pluginInfo.mFragment.updateInCallPluginInfo(pluginInfo);
-            }
-        } else {
-            // Init plugin info list
-            mPluginTabInfo.clear();
-            mPluginLength = 0;
-        }
-
-        mPageStateCount = TabState.COUNT + mPluginLength;
-        mTabStateGroup = TabState.GROUPS + mPluginLength;
-
+        mTabTitles = new String[TabState.COUNT];
+        mTabTitles[TabState.FAVORITES] = getString(R.string.favorites_tab_label);
+        mTabTitles[TabState.ALL] = getString(R.string.all_contacts_tab_label);
+        mTabTitles[TabState.GROUPS] = getString(R.string.contacts_groups_label);
         mTabPager = getView(R.id.tab_pager);
         mTabPagerAdapter = new TabPagerAdapter();
         mTabPager.setAdapter(mTabPagerAdapter);
@@ -450,36 +418,15 @@ public class PeopleActivity extends ContactsActivity implements
                 fragmentManager.findFragmentByTag(ALL_TAG);
         mGroupsFragment = (GroupBrowseListFragment)
                 fragmentManager.findFragmentByTag(GROUPS_TAG);
-        mFavoritesUnavailableFragment = (ContactsUnavailableFragment) fragmentManager
-                .findFragmentByTag(FAVORITE_UNAVAILABLE_TAG);
-        mAllUnavailableFragment = (ContactsUnavailableFragment) fragmentManager
-                .findFragmentByTag(ALL_UNAVAILABLE_TAG);
-        mGroupsUnavailableFragment = (ContactsUnavailableFragment) fragmentManager
-                .findFragmentByTag(GROUPS_UNAVAILABLE_TAG);
-
 
         if (mFavoritesFragment == null) {
             mFavoritesFragment = new ContactTileListFragment();
             mAllFragment = new MultiSelectContactsListFragment();
             mGroupsFragment = new GroupBrowseListFragment();
-            mFavoritesUnavailableFragment = new ContactsUnavailableFragment();
-            mAllUnavailableFragment = new ContactsUnavailableFragment();
-            mGroupsUnavailableFragment = new ContactsUnavailableFragment();
-            mFavoritesUnavailableFragment.setOnContactsUnavailableActionListener(
-                    new ContactsUnavailableFragmentListener());
-            mAllUnavailableFragment.setOnContactsUnavailableActionListener(
-                    new ContactsUnavailableFragmentListener());
-            mGroupsUnavailableFragment.setOnContactsUnavailableActionListener(
-                    new ContactsUnavailableFragmentListener());
 
             transaction.add(R.id.tab_pager, mFavoritesFragment, FAVORITE_TAG);
             transaction.add(R.id.tab_pager, mAllFragment, ALL_TAG);
             transaction.add(R.id.tab_pager, mGroupsFragment, GROUPS_TAG);
-            transaction.add(R.id.tab_pager, mFavoritesUnavailableFragment,
-                    FAVORITE_UNAVAILABLE_TAG);
-            transaction.add(R.id.tab_pager, mAllUnavailableFragment, ALL_UNAVAILABLE_TAG);
-            transaction.add(R.id.tab_pager, mGroupsUnavailableFragment, GROUPS_UNAVAILABLE_TAG);
-
         }
 
         mFavoritesFragment.setListener(mFavoritesFragmentListener);
@@ -494,27 +441,28 @@ public class PeopleActivity extends ContactsActivity implements
         transaction.hide(mFavoritesFragment);
         transaction.hide(mAllFragment);
         transaction.hide(mGroupsFragment);
-        transaction.hide(mFavoritesUnavailableFragment);
-        transaction.hide(mAllUnavailableFragment);
-        transaction.hide(mGroupsUnavailableFragment);
 
         transaction.commitAllowingStateLoss();
         fragmentManager.executePendingTransactions();
-
-        mFavoritesUnavailableFragment.setMessageText(R.string.listTotalAllContactsZeroStarred, -1);
-        mGroupsUnavailableFragment.setMessageText(R.string.noGroups,
-                areGroupWritableAccountsAvailable() ? -1 : R.string.noAccounts);
-        mAllUnavailableFragment.setMessageText(R.string.noContacts, -1);
 
         // Setting Properties after fragment is created
         mFavoritesFragment.setDisplayType(DisplayType.STREQUENT);
 
         mActionBarAdapter = new ActionBarAdapter(this, this, getActionBar(),
                 portraitViewPagerTabs, landscapeViewPagerTabs, toolbar);
-        mActionBarAdapter.initialize(savedState, mRequest, mPageStateCount);
-        initializeFabVisibility();
+        mActionBarAdapter.initialize(savedState, mRequest);
+
         // Add shadow under toolbar
         ViewUtil.addRectangularOutlineProvider(findViewById(R.id.toolbar_parent), getResources());
+
+        // Configure floating action button
+        mFloatingActionButtonContainer = findViewById(R.id.floating_action_button_container);
+        final ImageButton floatingActionButton
+                = (ImageButton) findViewById(R.id.floating_action_button);
+        floatingActionButton.setOnClickListener(this);
+        mFloatingActionButtonController = new FloatingActionButtonController(this,
+                mFloatingActionButtonContainer, floatingActionButton);
+        initializeFabVisibility();
 
         invalidateOptionsMenuIfNeeded();
     }
@@ -540,39 +488,23 @@ public class PeopleActivity extends ContactsActivity implements
              */
             configureFragments(!mIsRecreatedInstance);
         }
+        restoreExportToSimProgressBar();
         super.onStart();
     }
 
     @Override
     protected void onPause() {
-        ContactsDataSubscription.get(this).unsubscribe(CALL_METHOD_HELPER_SUBSCRIBER_ID);
         mOptionsMenuContactsAvailable = false;
         mProviderStatusWatcher.stop();
         super.onPause();
         dismissDialog(ImportExportDialogFragment.TAG);
         dismissDialog(SelectAccountDialogFragment.TAG);
-        // reset the configuration change flag
-        mConfigurationChanged = false;
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        onResumeInit();
-        ContactsDataSubscription dataSubscription = ContactsDataSubscription.get(this);
-        if (dataSubscription.subscribe(CALL_METHOD_HELPER_SUBSCRIBER_ID,
-                pluginsUpdatedReceiver)) {
-            if (CallMethodFilters.getAllEnabledCallMethods(dataSubscription).size() > 0) {
-                InCallPluginUtils.refreshInCallPlugins(this, mConfigurationChanged,
-                        dataSubscription);
-            } else {
-                // double check if the UI needs to update in case of plugin state changes
-                updatePlugins(null);
-            }
-        }
-    }
 
-    private synchronized void onResumeInit() {
         mProviderStatusWatcher.start();
         updateViewConfiguration(true);
 
@@ -587,6 +519,42 @@ public class PeopleActivity extends ContactsActivity implements
         // the actual contents match the tab.
         updateFragmentsVisibility();
     }
+
+    @Override
+    public void onAttachedToWindow() {
+        if (mActionBarAdapter != null) {
+            mActionBarAdapter.showPopupWindowIfNeed();
+        }
+        super.onAttachedToWindow();
+    }
+
+    @Override
+    protected void onStop() {
+        if (mActionBarAdapter != null) {
+            mActionBarAdapter.onClosePopupWindow();
+        }
+        super.onStop();
+    }
+
+    /**
+     * Use to restore export contacts to sim card's progressbar if exist.
+     */
+    private void restoreExportToSimProgressBar() {
+
+        // Judge whether contacts is exporting to sim card.
+        if (ImportExportDialogFragment.isExportingToSIM()) {
+            // Get export thread
+            mExportThread = ImportExportDialogFragment.getExportingToSimThread();
+            if(mExportThread != null) {
+                // Restore ProgressDialog
+                if (mExportThread.getProgressDialog() != null) {
+                    mExportThread.getProgressDialog().dismiss();
+                }
+                new ImportExportDialogFragment().showExportToSIMProgressDialog(PeopleActivity.this);
+            }
+        }
+    }
+
 
     @Override
     protected void onDestroy() {
@@ -604,7 +572,6 @@ public class PeopleActivity extends ContactsActivity implements
         if (mExportToSimCompleteListener != null) {
             unregisterReceiver(mExportToSimCompleteListener);
         }
-
         super.onDestroy();
     }
 
@@ -645,14 +612,14 @@ public class PeopleActivity extends ContactsActivity implements
                     tabToOpen = TabState.ALL;
                     break;
                 case ContactsRequest.ACTION_GROUP:
-                    tabToOpen = mTabStateGroup;
+                    tabToOpen = TabState.GROUPS;
                     break;
                 default:
                     tabToOpen = -1;
                     break;
             }
             if (tabToOpen != -1) {
-                mActionBarAdapter.setCurrentTab(tabToOpen, mPageStateCount);
+                mActionBarAdapter.setCurrentTab(tabToOpen);
             }
 
             if (filter != null) {
@@ -721,13 +688,13 @@ public class PeopleActivity extends ContactsActivity implements
         switch (action) {
             case ActionBarAdapter.Listener.Action.START_SELECTION_MODE:
                 mAllFragment.displayCheckBoxes(true);
-                // Fall through:
+                startSearchOrSelectionMode();
+                break;
             case ActionBarAdapter.Listener.Action.START_SEARCH_MODE:
-                // Tell the fragments that we're in the search mode or selection mode
-                configureFragments(false /* from request */);
-                updateFragmentsVisibility();
-                invalidateOptionsMenu();
-                showFabWithAnimation(/* showFabWithAnimation = */ false);
+                if (!mIsRecreatedInstance) {
+                    Logger.logScreenView(this, ScreenType.SEARCH);
+                }
+                startSearchOrSelectionMode();
                 break;
             case ActionBarAdapter.Listener.Action.BEGIN_STOPPING_SEARCH_AND_SELECTION_MODE:
                 showFabWithAnimation(/* showFabWithAnimation = */ true);
@@ -749,6 +716,13 @@ public class PeopleActivity extends ContactsActivity implements
         }
     }
 
+    private void startSearchOrSelectionMode() {
+        configureFragments(false /* from request */);
+        updateFragmentsVisibility();
+        invalidateOptionsMenu();
+        showFabWithAnimation(/* showFabWithAnimation = */ false);
+    }
+
     @Override
     public void onSelectedTabChanged() {
         updateFragmentsVisibility();
@@ -757,6 +731,16 @@ public class PeopleActivity extends ContactsActivity implements
     @Override
     public void onUpButtonPressed() {
         onBackPressed();
+    }
+
+    @Override
+    public void onPopupItemClick(boolean selectAll) {
+        if (mActionBarAdapter != null && mActionBarAdapter.isSelectionMode()) {
+            mAllFragment.setSelectAll(selectAll);
+            if (!selectAll) {
+                mActionBarAdapter.setSelectionMode(false);
+            }
+        }
     }
 
     private void updateDebugOptionsVisibility(boolean visible) {
@@ -770,7 +754,7 @@ public class PeopleActivity extends ContactsActivity implements
      * Updates the fragment/view visibility according to the current mode, such as
      * {@link ActionBarAdapter#isSearchMode()} and {@link ActionBarAdapter#getCurrentTab()}.
      */
-    private synchronized void updateFragmentsVisibility() {
+    private void updateFragmentsVisibility() {
         int tab = mActionBarAdapter.getCurrentTab();
 
         if (mActionBarAdapter.isSearchMode() || mActionBarAdapter.isSelectionMode()) {
@@ -788,8 +772,31 @@ public class PeopleActivity extends ContactsActivity implements
             mAllFragment.displayCheckBoxes(false);
         }
         invalidateOptionsMenu();
-        if (tab == mTabStateGroup) {
+        showEmptyStateForTab(tab);
+        if (tab == TabState.GROUPS) {
             mGroupsFragment.setAddAccountsVisibility(!areGroupWritableAccountsAvailable());
+        }
+    }
+
+    private void showEmptyStateForTab(int tab) {
+        if (mContactsUnavailableFragment != null) {
+            switch (getTabPositionForTextDirection(tab)) {
+                case TabState.FAVORITES:
+                    mContactsUnavailableFragment.setTabInfo(
+                            R.string.listTotalAllContactsZeroStarred, TabState.FAVORITES);
+                    break;
+                case TabState.GROUPS:
+                    mContactsUnavailableFragment.setTabInfo(R.string.noGroups,
+                            areGroupWritableAccountsAvailable() ? -1 : R.string.noAccounts);
+                    break;
+                case TabState.ALL:
+                    mContactsUnavailableFragment.setTabInfo(R.string.noContacts, TabState.ALL);
+                    break;
+            }
+            // When using the mContactsUnavailableFragment the ViewPager doesn't contain two views.
+            // Therefore, we have to trick the ViewPagerTabs into thinking we have changed tabs
+            // when the mContactsUnavailableFragment changes. Otherwise the tab strip won't move.
+            mViewPagerTabs.onPageScrolled(tab, 0, 0);
         }
     }
 
@@ -827,9 +834,10 @@ public class PeopleActivity extends ContactsActivity implements
         public void onPageSelected(int position) {
             // Make sure not in the search mode, in which case position != TabState.ordinal().
             if (!mTabPagerAdapter.areTabsHidden()) {
-                mActionBarAdapter.setCurrentTab(position, mPageStateCount, false);
+                mActionBarAdapter.setCurrentTab(position, false);
                 mViewPagerTabs.onPageSelected(position);
-                if (position == mTabStateGroup) {
+                showEmptyStateForTab(position);
+                if (position == TabState.GROUPS) {
                     mGroupsFragment.setAddAccountsVisibility(!areGroupWritableAccountsAvailable());
                 }
                 invalidateOptionsMenu();
@@ -873,7 +881,7 @@ public class PeopleActivity extends ContactsActivity implements
 
         @Override
         public int getCount() {
-            return mAreTabsHiddenInTabPager ? 1 : mPageStateCount;
+            return mAreTabsHiddenInTabPager ? 1 : TabState.COUNT;
         }
 
         /** Gets called when the number of items changes. */
@@ -884,22 +892,14 @@ public class PeopleActivity extends ContactsActivity implements
                     return 0; // Only 1 page in search mode
                 }
             } else {
-                if ((!mAccountUnavailable && object == mFavoritesFragment) ||
-                        (mAccountUnavailable && object == mFavoritesUnavailableFragment)) {
+                if (object == mFavoritesFragment) {
                     return getTabPositionForTextDirection(TabState.FAVORITES);
                 }
-                if ((!mAccountUnavailable && object == mAllFragment) || (mAccountUnavailable &&
-                        object == mAllUnavailableFragment)) {
+                if (object == mAllFragment) {
                     return getTabPositionForTextDirection(TabState.ALL);
                 }
-                for (int i = 0; i < mPluginLength; i++) {
-                    if (object == mPluginTabInfo.get(i).mFragment) {
-                        return getTabPositionForTextDirection(TabState.GROUPS + i);
-                    }
-                }
-                if ((!mAccountUnavailable && object == mGroupsFragment) || (mAccountUnavailable &&
-                        object == mGroupsUnavailableFragment)) {
-                    return getTabPositionForTextDirection(mTabStateGroup);
+                if (object == mGroupsFragment) {
+                    return TabState.GROUPS;
                 }
             }
             return POSITION_NONE;
@@ -921,16 +921,11 @@ public class PeopleActivity extends ContactsActivity implements
                 return mAllFragment;
             } else {
                 if (position == TabState.FAVORITES) {
-                    return mAccountUnavailable ? mFavoritesUnavailableFragment : mFavoritesFragment;
+                    return mFavoritesFragment;
                 } else if (position == TabState.ALL) {
-                    return mAccountUnavailable ? mAllUnavailableFragment : mAllFragment;
-                } else if (position == (mPageStateCount - 1)) {
-                    return mAccountUnavailable ? mGroupsUnavailableFragment : mGroupsFragment;
-                } else {
-                    int pluginOffset = position - TabState.GROUPS;
-                    if (pluginOffset >= 0 && pluginOffset < mPluginTabInfo.size()) {
-                        return mPluginTabInfo.get(pluginOffset).mFragment;
-                    }
+                    return mAllFragment;
+                } else if (position == TabState.GROUPS) {
+                    return mGroupsFragment;
                 }
             }
             throw new IllegalArgumentException("position: " + position);
@@ -981,12 +976,6 @@ public class PeopleActivity extends ContactsActivity implements
                 if (fragment != null) {
                     fragment.setUserVisibleHint(true);
                 }
-                if (fragment != null && fragment instanceof PluginContactBrowseListFragment) {
-                    CallMethodInfo cmi = ((PluginContactBrowseListFragment) fragment)
-                            .getPluginInfo().mCallMethodInfo;
-                    InCallMetricsHelper.increaseImpressionCount(PeopleActivity.this, cmi,
-                        InCallMetricsHelper.Events.INAPP_NUDGE_CONTACTS_TAB_LOGIN);
-                }
                 mCurrentPrimaryItem = fragment;
             }
         }
@@ -1002,7 +991,7 @@ public class PeopleActivity extends ContactsActivity implements
 
         @Override
         public CharSequence getPageTitle(int position) {
-            return mTabTitles.get(position).mTitle;
+            return mTabTitles[position];
         }
     }
 
@@ -1060,69 +1049,45 @@ public class PeopleActivity extends ContactsActivity implements
                 && (mProviderStatus.equals(providerStatus))) return;
         mProviderStatus = providerStatus;
 
+        View contactsUnavailableView = findViewById(R.id.contacts_unavailable_view);
+
         if (mProviderStatus.equals(ProviderStatus.STATUS_NORMAL)) {
             // Ensure that the mTabPager is visible; we may have made it invisible below.
-            mAccountUnavailable = false;
+            contactsUnavailableView.setVisibility(View.GONE);
+            if (mTabPager != null) {
+                mTabPager.setVisibility(View.VISIBLE);
+            }
+
             if (mAllFragment != null) {
                 mAllFragment.setEnabled(true);
             }
-            mTabPagerAdapter.notifyDataSetChanged();
         } else {
-            // If there are no accounts on the device and we should show the "no account" prompt
-            // (based on {@link SharedPreferences}), then launch the account setup activity so the
-            // user can sign-in or create an account.
-            //
-            // Also check for ability to modify accounts.  In limited user mode, you can't modify
-            // accounts so there is no point sending users to account setup activity.
-            final UserManager userManager = (UserManager) getSystemService(Context.USER_SERVICE);
-            final boolean disallowModifyAccounts = userManager.getUserRestrictions().getBoolean(
-                    UserManager.DISALLOW_MODIFY_ACCOUNTS);
-            if (!disallowModifyAccounts && !areContactWritableAccountsAvailable() &&
-                    AccountPromptUtils.shouldShowAccountPrompt(this)) {
-                AccountPromptUtils.neverShowAccountPromptAgain(this);
-                AccountPromptUtils.launchAccountPrompt(this);
-                return;
-            }
-            mAccountUnavailable = true;
-
-            // Otherwise, continue setting up the page so that the user can still use the app
-            // without an account.
+            // Setting up the page so that the user can still use the app
+            // even without an account.
             if (mAllFragment != null) {
                 mAllFragment.setEnabled(false);
             }
-            mAllUnavailableFragment.updateStatus(mProviderStatus);
-            mFavoritesUnavailableFragment.updateStatus(mProviderStatus);
-            mGroupsUnavailableFragment.updateStatus(mProviderStatus);
-            mTabPagerAdapter.notifyDataSetChanged();
+            if (mContactsUnavailableFragment == null) {
+                mContactsUnavailableFragment = new ContactsUnavailableFragment();
+                mContactsUnavailableFragment.setOnContactsUnavailableActionListener(
+                        new ContactsUnavailableFragmentListener());
+                getFragmentManager().beginTransaction()
+                        .replace(R.id.contacts_unavailable_container, mContactsUnavailableFragment)
+                        .commitAllowingStateLoss();
+            }
+            mContactsUnavailableFragment.updateStatus(mProviderStatus);
+
+            // Show the contactsUnavailableView, and hide the mTabPager so that we don't
+            // see it sliding in underneath the contactsUnavailableView at the edges.
+            contactsUnavailableView.setVisibility(View.VISIBLE);
+            if (mTabPager != null) {
+                mTabPager.setVisibility(View.GONE);
+            }
+
+            showEmptyStateForTab(mActionBarAdapter.getCurrentTab());
         }
 
         invalidateOptionsMenuIfNeeded();
-    }
-    private final class PluginContactBrowserActionListener implements
-            OnContactBrowserActionListener {
-        PluginContactBrowserActionListener() {}
-        @Override
-        public void onSelectionChange() {}
-
-        @Override
-        public void onViewContactAction(Uri contactLookupUri) {
-            final Intent intent = ImplicitIntentsUtil.composeQuickContactIntent(contactLookupUri,
-                    QuickContactActivity.MODE_FULLY_EXPANDED);
-            ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
-        }
-
-        @Override
-        public void onDeleteContactAction(Uri contactUri) {
-            ContactDeletionInteraction.start(PeopleActivity.this, contactUri, false);
-        }
-
-        @Override
-        public void onFinishAction() {
-            onBackPressed();
-        }
-
-        @Override
-        public void onInvalidSelection() {}
     }
 
     private final class ContactBrowserActionListener implements OnContactBrowserActionListener {
@@ -1134,10 +1099,18 @@ public class PeopleActivity extends ContactsActivity implements
         }
 
         @Override
-        public void onViewContactAction(Uri contactLookupUri) {
-            final Intent intent = ImplicitIntentsUtil.composeQuickContactIntent(contactLookupUri,
-                    QuickContactActivity.MODE_FULLY_EXPANDED);
-            ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
+        public void onViewContactAction(Uri contactLookupUri, boolean isEnterpriseContact) {
+            if (isEnterpriseContact) {
+                // No implicit intent as user may have a different contacts app in work profile.
+                QuickContact.showQuickContact(PeopleActivity.this, new Rect(), contactLookupUri,
+                        QuickContactActivity.MODE_FULLY_EXPANDED, null);
+            } else {
+                final Intent intent = ImplicitIntentsUtil.composeQuickContactIntent(
+                        contactLookupUri, QuickContactActivity.MODE_FULLY_EXPANDED);
+                intent.putExtra(QuickContactActivity.EXTRA_PREVIOUS_SCREEN_TYPE,
+                        mAllFragment.isSearchMode() ? ScreenType.SEARCH : ScreenType.ALL_CONTACTS);
+                ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
+            }
         }
 
         @Override
@@ -1177,7 +1150,17 @@ public class PeopleActivity extends ContactsActivity implements
 
         @Override
         public void onSelectedContactIdsChanged() {
-            mActionBarAdapter.setSelectionCount(mAllFragment.getSelectedContactIds().size());
+            if (mActionBarAdapter != null && mActionBarAdapter.isSelectionMode()) {
+                int selectedCount = mAllFragment.getSelectedContactIds().size();
+                int allContactsCount = mAllFragment.getAdapter().getAllVisibleContactIds().size();
+                mActionBarAdapter.setSelectionCount(selectedCount);
+                // When screen rotate, contacts cursor need reload, before cursor
+                // reload complete, the allContactsCount is 0.
+                if (allContactsCount != 0) {
+                    mActionBarAdapter.updatePopupWindowViewIfNeed(
+                            allContactsCount == selectedCount);
+                }
+            }
             invalidateOptionsMenu();
         }
 
@@ -1199,17 +1182,13 @@ public class PeopleActivity extends ContactsActivity implements
 
         @Override
         public void onAddAccountAction() {
-            Intent intent = new Intent(Settings.ACTION_ADD_ACCOUNT);
-            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
-            intent.putExtra(Settings.EXTRA_AUTHORITIES,
-                    new String[]{ContactsContract.AUTHORITY});
+            final Intent intent = ImplicitIntentsUtil.getIntentForAddingAccount();
             ImplicitIntentsUtil.startActivityOutsideApp(PeopleActivity.this, intent);
         }
 
         @Override
         public void onImportContactsFromFileAction() {
-            ImportExportDialogFragment.show(getFragmentManager(), areContactsAvailable(),
-                    PeopleActivity.class);
+            showImportExportDialogFragment();
         }
     }
 
@@ -1221,6 +1200,7 @@ public class PeopleActivity extends ContactsActivity implements
         public void onContactSelected(Uri contactUri, Rect targetRect) {
             final Intent intent = ImplicitIntentsUtil.composeQuickContactIntent(contactUri,
                     QuickContactActivity.MODE_FULLY_EXPANDED);
+            intent.putExtra(QuickContactActivity.EXTRA_PREVIOUS_SCREEN_TYPE, ScreenType.FAVORITES);
             ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
         }
 
@@ -1340,77 +1320,75 @@ public class PeopleActivity extends ContactsActivity implements
         MenuItem addGroupMenu = menu.findItem(R.id.menu_add_group);
         final MenuItem clearFrequentsMenu = menu.findItem(R.id.menu_clear_frequents);
         final MenuItem helpMenu = menu.findItem(R.id.menu_help);
+        final MenuItem mergeContactsMenu = menu.findItem(R.id.menu_merge_contacts);
 
         final boolean isSearchOrSelectionMode = mActionBarAdapter.isSearchMode()
                 || mActionBarAdapter.isSelectionMode();
-        boolean isPlugin = false;
         if (isSearchOrSelectionMode) {
             addGroupMenu.setVisible(false);
             contactsFilterMenu.setVisible(false);
             clearFrequentsMenu.setVisible(false);
             helpMenu.setVisible(false);
-            makeMenuItemVisible(menu, R.id.menu_delete, false);
+            mergeContactsMenu.setVisible(false);
         } else {
-            int tabPosition = getTabPositionForTextDirection(mActionBarAdapter.getCurrentTab());
-            if (tabPosition == TabState.FAVORITES) {
-                addGroupMenu.setVisible(false);
-                contactsFilterMenu.setVisible(false);
-                clearFrequentsMenu.setVisible(hasFrequents());
-            } else if (tabPosition == TabState.ALL) {
-                addGroupMenu.setVisible(false);
-                contactsFilterMenu.setVisible(true);
-                clearFrequentsMenu.setVisible(false);
-            } else if (tabPosition == mTabStateGroup) {
+            switch (getTabPositionForTextDirection(mActionBarAdapter.getCurrentTab())) {
+                case TabState.FAVORITES:
+                    addGroupMenu.setVisible(false);
+                    contactsFilterMenu.setVisible(false);
+                    clearFrequentsMenu.setVisible(hasFrequents());
+                    mergeContactsMenu.setVisible(false);
+                    break;
+                case TabState.ALL:
+                    addGroupMenu.setVisible(false);
+                    contactsFilterMenu.setVisible(true);
+                    clearFrequentsMenu.setVisible(false);
+                    break;
+                case TabState.GROUPS:
                     // Do not display the "new group" button if no accounts are available
                     if (areGroupWritableAccountsAvailable()) {
                         addGroupMenu.setVisible(true);
                     } else {
                         addGroupMenu.setVisible(false);
                     }
+                    addGroupMenu.setVisible(true);
                     contactsFilterMenu.setVisible(false);
                     clearFrequentsMenu.setVisible(false);
-            } else if (mPluginLength > 0 && tabPosition >= TabState.GROUPS){
-                // plugin tab
-                updatePluginFab(tabPosition);
-                // menu
-                addGroupMenu.setVisible(false);
-                contactsFilterMenu.setVisible(false);
-                clearFrequentsMenu.setVisible(false);
-                makeMenuItemVisible(menu, R.id.menu_delete, false);
-                isPlugin = true;
+                    mergeContactsMenu.setVisible(false);
             }
-            if (!isPlugin) {
-                mFloatingActionButtonContainer.setVisibility(View.VISIBLE);
-            }
-
             helpMenu.setVisible(HelpUtils.isHelpAndFeedbackAvailable());
         }
         final boolean showMiscOptions = !isSearchOrSelectionMode;
-        if (!isPlugin) {
-            makeMenuItemVisible(menu, R.id.menu_search, showMiscOptions);
-            mFloatingActionButton.setImageDrawable(getResources().getDrawable(R.drawable
-                    .ic_person_add_24dp));
-        } else {
-            mFloatingActionButton.setImageDrawable(getResources().getDrawable(R.drawable
-                    .ic_add));
-        }
+        final boolean showBlockedNumbers = PhoneCapabilityTester.isPhone(this)
+                && ContactsUtils.FLAG_N_FEATURE
+                && BlockedNumberContract.canCurrentUserBlockNumbers(this);
         makeMenuItemVisible(menu, R.id.menu_search, showMiscOptions);
         makeMenuItemVisible(menu, R.id.menu_import_export, showMiscOptions);
         makeMenuItemVisible(menu, R.id.menu_accounts, showMiscOptions);
-        makeMenuItemVisible(menu, R.id.menu_memory_status, showMiscOptions);
+        makeMenuItemVisible(menu, R.id.menu_blocked_numbers, showMiscOptions && showBlockedNumbers);
         makeMenuItemVisible(menu, R.id.menu_settings,
                 showMiscOptions && !ContactsPreferenceActivity.isEmpty(this));
 
         final boolean showSelectedContactOptions = mActionBarAdapter.isSelectionMode()
                 && mAllFragment.getSelectedContactIds().size() != 0;
         makeMenuItemVisible(menu, R.id.menu_share, showSelectedContactOptions);
-        makeMenuItemVisible(menu, R.id.menu_join, showSelectedContactOptions);
-        makeMenuItemEnabled(menu, R.id.menu_join, mAllFragment.getSelectedContactIds().size() > 1);
+        makeMenuItemVisible(menu, R.id.menu_delete, showSelectedContactOptions);
+        final boolean showLinkContactsOptions = mActionBarAdapter.isSelectionMode()
+                && mAllFragment.getSelectedContactIds().size() > 1;
+        makeMenuItemVisible(menu, R.id.menu_join, showLinkContactsOptions);
 
         // Debug options need to be visible even in search mode.
-        makeMenuItemVisible(menu, R.id.export_database, mEnableDebugMenuOptions);
+        makeMenuItemVisible(menu, R.id.export_database, mEnableDebugMenuOptions &&
+                hasExportIntentHandler());
 
         return true;
+    }
+
+    private boolean hasExportIntentHandler() {
+        final Intent intent = new Intent();
+        intent.setAction("com.android.providers.contacts.DUMP_DATABASE");
+        final List<ResolveInfo> receivers = getPackageManager().queryIntentActivities(intent,
+                PackageManager.MATCH_DEFAULT_ONLY);
+        return receivers != null && receivers.size() > 0;
     }
 
     /**
@@ -1451,18 +1429,7 @@ public class PeopleActivity extends ContactsActivity implements
                 return true;
             }
             case R.id.menu_settings: {
-                final Intent intent = new Intent(this, ContactsPreferenceActivity.class);
-                // Since there is only one section right now, make sure it is selected on
-                // small screens.
-                intent.putExtra(PreferenceActivity.EXTRA_SHOW_FRAGMENT,
-                        DisplayOptionsPreferenceFragment.class.getName());
-                // By default, the title of the activity should be equivalent to the fragment
-                // title. We set this argument to avoid this. Because of a bug, the following
-                // line isn't necessary. But, once the bug is fixed this may become necessary.
-                // b/5045558 refers to this issue, as well as another.
-                intent.putExtra(PreferenceActivity.EXTRA_SHOW_FRAGMENT_TITLE,
-                        R.string.activity_title_settings);
-                startActivity(intent);
+                startActivity(new Intent(this, ContactsPreferenceActivity.class));
                 return true;
             }
             case R.id.menu_contacts_filter: {
@@ -1486,19 +1453,12 @@ public class PeopleActivity extends ContactsActivity implements
                 return true;
             }
             case R.id.menu_delete: {
-                final Intent intent = new Intent(Intent.ACTION_DELETE, Contacts.CONTENT_URI);
-                intent.putExtra(EDITABLE_KEY, mActionBarAdapter.getQueryString());
-
-                ContactListFilter filter = ContactListFilter.restoreDefaultPreferences(
-                    PreferenceManager.getDefaultSharedPreferences(this));
-                intent.putExtra(AccountFilterActivity.KEY_EXTRA_CONTACT_LIST_FILTER, filter);
-
-                startActivity(intent);
+                // Delete the selected contacts
+                deleteSelectedContacts();
                 return true;
             }
             case R.id.menu_import_export: {
-                ImportExportDialogFragment.show(getFragmentManager(), areContactsAvailable(),
-                        PeopleActivity.class);
+                showImportExportDialogFragment();
                 return true;
             }
             case R.id.menu_clear_frequents: {
@@ -1517,20 +1477,38 @@ public class PeopleActivity extends ContactsActivity implements
                 ImplicitIntentsUtil.startActivityInAppIfPossible(this, intent);
                 return true;
             }
+            case R.id.menu_blocked_numbers: {
+                final Intent intent = TelecomManagerUtil.createManageBlockedNumbersIntent(
+                        (TelecomManager) getSystemService(Context.TELECOM_SERVICE));
+                if (intent != null) {
+                    startActivity(intent);
+                }
+                return true;
+            }
             case R.id.export_database: {
                 final Intent intent = new Intent("com.android.providers.contacts.DUMP_DATABASE");
                 intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
                 ImplicitIntentsUtil.startActivityOutsideApp(this, intent);
                 return true;
             }
-
-            case R.id.menu_memory_status: {
-                final Intent intent = new Intent(this, MemoryStatusActivity.class);
+            case R.id.menu_merge_contacts: {
+                Intent intent = new Intent("android.intent.action.MERGE_DUPLICATED");
                 startActivity(intent);
                 return true;
             }
         }
         return false;
+    }
+
+    private void showImportExportDialogFragment(){
+        final boolean isOnFavoriteTab = mTabPagerAdapter.mCurrentPrimaryItem == mFavoritesFragment;
+        if (isOnFavoriteTab) {
+            ImportExportDialogFragment.show(getFragmentManager(), areContactsAvailable(),
+                    PeopleActivity.class, ImportExportDialogFragment.EXPORT_MODE_FAVORITES);
+        } else {
+            ImportExportDialogFragment.show(getFragmentManager(), areContactsAvailable(),
+                    PeopleActivity.class, ImportExportDialogFragment.EXPORT_MODE_ALL_CONTACTS);
+        }
     }
 
     @Override
@@ -1546,26 +1524,69 @@ public class PeopleActivity extends ContactsActivity implements
      * inefficient for handling large numbers of contacts. I don't expect this to be a problem.
      */
     private void shareSelectedContacts() {
-        final StringBuilder uriListBuilder = new StringBuilder();
-        boolean firstIteration = true;
-        for (Long contactId : mAllFragment.getSelectedContactIds()) {
-            if (!firstIteration)
-                uriListBuilder.append(':');
-            final Uri contactUri = ContentUris.withAppendedId(Contacts.CONTENT_URI, contactId);
-            final Uri lookupUri = Contacts.getLookupUri(getContentResolver(), contactUri);
-            List<String> pathSegments = lookupUri.getPathSegments();
-            uriListBuilder.append(Uri.encode(pathSegments.get(pathSegments.size() - 2)));
-            firstIteration = false;
+        Set<Long> selectedIds = mAllFragment.getSelectedContactIds();
+        // Limit the selected contacts number because too long arguments
+        // will cause TransactionTooLargeException in binder.
+        if (selectedIds.size() > MAX_COUNT_ALLOW_SHARE_CONTACT) {
+            Toast.makeText(
+                    this,
+                    getString(R.string.too_many_contacts_add_to_group,
+                            MAX_COUNT_ALLOW_SHARE_CONTACT), Toast.LENGTH_SHORT)
+                    .show();
+            return;
         }
         final Uri uri = Uri.withAppendedPath(
                 Contacts.CONTENT_MULTI_VCARD_URI,
-                Uri.encode(uriListBuilder.toString()));
+                Uri.encode(getLookupKey(selectedIds)));
         final Intent intent = new Intent(Intent.ACTION_SEND);
         intent.setType(Contacts.CONTENT_VCARD_TYPE);
         intent.putExtra(Intent.EXTRA_STREAM, uri);
         ImplicitIntentsUtil.startActivityOutsideApp(this, intent);
     }
+
+    // Query contact lookupKey instead of {@link Contacts#getLookupUri()} which is pretty
+    // inefficient
+    private String getLookupKey(Set<Long> mSelectedIds) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(Contacts._ID);
+        sb.append(" IN ( ");
+        for (Long contactId : mSelectedIds) {
+            sb.append(contactId);
+            sb.append(",");
+        }
+        sb.deleteCharAt(sb.length()-1);
+        sb.append(" )");
+
+        final Cursor c = getContentResolver().query(Contacts.CONTENT_URI, new String[]{
+                Contacts.LOOKUP_KEY}, sb.toString(), null, null);
+        if (c == null) {
+            return null;
+        }
+
+        sb = new StringBuilder();
+        try {
+            c.moveToPosition(-1);
+            while (c.moveToNext()) {
+                final String lookupKey = c.getString(0);
+                sb.append(lookupKey);
+                sb.append(":");
+            }
+        } finally {
+            c.close();
+        }
+        sb.deleteCharAt(sb.length() - 1);
+        return sb.toString();
+    }
+
     private void joinSelectedContacts() {
+        /*limit the maximum number of the selected contacts to merge*/
+        if(mAllFragment.getSelectedContactIds().size() > MAX_CONTACTS_NUM_TO_MERGE_ONCE) {
+            Toast.makeText(PeopleActivity.this,
+                    getString(R.string.too_many_contacts_to_merge_message,
+                    MAX_CONTACTS_NUM_TO_MERGE_ONCE),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         JoinContactsDialogFragment.start(this, mAllFragment.getSelectedContactIds());
     }
 
@@ -1646,43 +1667,43 @@ public class PeopleActivity extends ContactsActivity implements
                     }
                 }
                 break;
-        case ImportExportDialogFragment.SUBACTIVITY_EXPORT_CONTACTS:
-            if (resultCode == RESULT_OK) {
-                Bundle result = data.getExtras().getBundle(
+            case ImportExportDialogFragment.SUBACTIVITY_EXPORT_CONTACTS:
+                if (resultCode == RESULT_OK) {
+                    Bundle result = data.getExtras().getBundle(
                         SimContactsConstants.RESULT_KEY);
-                Set<String> keySet = result.keySet();
-                Iterator<String> it = keySet.iterator();
-                StringBuilder selExportBuilder = new StringBuilder();
-                while (it.hasNext()) {
-                    String id = it.next();
-                    if (0 != selExportBuilder.length()) {
+                    Set<String> keySet = result.keySet();
+                    Iterator<String> it = keySet.iterator();
+                    StringBuilder selExportBuilder = new StringBuilder();
+                    while (it.hasNext()) {
+                        String id = it.next();
+                        if (0 != selExportBuilder.length()) {
                         selExportBuilder.append(",");
                     }
                     selExportBuilder.append(id);
                 }
-                selExportBuilder.insert(0, "_id IN (");
-                selExportBuilder.append(")");
-                Intent exportIntent = new Intent(this,
+                    selExportBuilder.insert(0, "_id IN (");
+                    selExportBuilder.append(")");
+                    Intent exportIntent = new Intent(this,
                         ExportVCardActivity.class);
-                exportIntent.putExtra("SelExport", selExportBuilder.toString());
-                exportIntent.putExtra(
+                    exportIntent.putExtra("SelExport", selExportBuilder.toString());
+                    exportIntent.putExtra(
                         VCardCommonArguments.ARG_CALLING_ACTIVITY,
                         PeopleActivity.class.getName());
-                this.startActivity(exportIntent);
-            }
-            break;
-        case ImportExportDialogFragment.SUBACTIVITY_SHARE_VISILBLE_CONTACTS:
-            if (resultCode == RESULT_OK) {
-                Bundle result = data.getExtras().getBundle(
+                    this.startActivity(exportIntent);
+                }
+                break;
+            case ImportExportDialogFragment.SUBACTIVITY_SHARE_VISILBLE_CONTACTS:
+                if (resultCode == RESULT_OK) {
+                    Bundle result = data.getExtras().getBundle(
                         SimContactsConstants.RESULT_KEY);
-                StringBuilder uriListBuilder = new StringBuilder();
-                int index = 0;
-                int size = result.keySet().size();
-                // The premise of allowing to share contacts is that the
-                // amount of those contacts which have been selected to
-                // append and will be put into intent as extra data to
-                // deliver is not more that 2000, because too long arguments
-                // will cause TransactionTooLargeException in binder.
+                    StringBuilder uriListBuilder = new StringBuilder();
+                    int index = 0;
+                    int size = result.keySet().size();
+                    // The premise of allowing to share contacts is that the
+                    // amount of those contacts which have been selected to
+                    // append and will be put into intent as extra data to
+                    // deliver is not more that 2000, because too long arguments
+                    // will cause TransactionTooLargeException in binder.
                 if (size > ImportExportDialogFragment.MAX_COUNT_ALLOW_SHARE_CONTACT) {
                     Toast.makeText(this, R.string.share_failed,
                             Toast.LENGTH_SHORT).show();
@@ -1737,11 +1758,22 @@ public class PeopleActivity extends ContactsActivity implements
 
     @Override
     public void onBackPressed() {
+        if (!isSafeToCommitTransactions()) {
+            return;
+        }
+
         if (mActionBarAdapter.isSelectionMode()) {
             mActionBarAdapter.setSelectionMode(false);
             mAllFragment.displayCheckBoxes(false);
         } else if (mActionBarAdapter.isSearchMode()) {
             mActionBarAdapter.setSearchMode(false);
+
+            if (mAllFragment.wasSearchResultClicked()) {
+                mAllFragment.resetSearchResultClicked();
+            } else {
+                Logger.logScreenView(this, ScreenType.SEARCH_EXIT);
+                Logger.logSearchEvent(mAllFragment.createSearchState());
+            }
         } else {
             super.onBackPressed();
         }
@@ -1759,10 +1791,6 @@ public class PeopleActivity extends ContactsActivity implements
         mActionBarAdapter.setListener(null);
         if (mTabPager != null) {
             mTabPager.setOnPageChangeListener(null);
-        }
-        if (mPluginLength > 0) {
-            outState.putParcelableArrayList(KEY_PLUGIN_INFO_LIST, (ArrayList<InCallPluginInfo>)
-                    mPluginTabInfo);
         }
     }
 
@@ -1786,27 +1814,16 @@ public class PeopleActivity extends ContactsActivity implements
     public void onClick(View view) {
         switch (view.getId()) {
             case R.id.floating_action_button:
-                int tabPosition = getTabPositionForTextDirection(mActionBarAdapter.getCurrentTab());
-                if (mPluginLength > 0 && tabPosition >= TabState.GROUPS &&
-                        tabPosition != mTabStateGroup) {
-                    // plugin tab
-                    int pluginIndex = tabPosition - TabState.GROUPS;
-                    InCallPluginInfo pluginInfo = mPluginTabInfo.get(pluginIndex);
-                    InCallPluginUtils.startDirectoryDefaultSearch(this,
-                            ContactsDataSubscription.get(this).mClient,
-                            pluginInfo.mCallMethodInfo.mComponent);
-                } else {
-                    Intent intent = new Intent(Intent.ACTION_INSERT, Contacts.CONTENT_URI);
-                    Bundle extras = getIntent().getExtras();
-                    if (extras != null) {
-                        intent.putExtras(extras);
-                    }
-                    try {
-                        ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
-                    } catch (ActivityNotFoundException ex) {
-                        Toast.makeText(PeopleActivity.this, R.string.missing_app,
-                                Toast.LENGTH_SHORT).show();
-                    }
+                Intent intent = new Intent(Intent.ACTION_INSERT, Contacts.CONTENT_URI);
+                Bundle extras = getIntent().getExtras();
+                if (extras != null) {
+                    intent.putExtras(extras);
+                }
+                try {
+                    ImplicitIntentsUtil.startActivityInApp(PeopleActivity.this, intent);
+                } catch (ActivityNotFoundException ex) {
+                    Toast.makeText(PeopleActivity.this, R.string.missing_app,
+                            Toast.LENGTH_SHORT).show();
                 }
                 break;
         default:
@@ -1819,184 +1836,8 @@ public class PeopleActivity extends ContactsActivity implements
      */
     private int getTabPositionForTextDirection(int position) {
         if (isRTL()) {
-            return mPageStateCount - 1 - position;
+            return TabState.COUNT - 1 - position;
         }
         return position;
-    }
-
-    private class TabEntry {
-        public String mTag;
-        public String mTitle;
-
-        public TabEntry(String tag, String title) {
-            mTag = tag;
-            mTitle = title;
-        }
-    }
-
-    /*
-    * peforms a look up using the tab tag among the ViewPagerTabs
-    */
-    private int lookupTabTag(String tabTag) {
-        int size = mTabTitles.size();
-        for (int i = 0; i < size; i++) {
-            TabEntry tab = mTabTitles.get(i);
-            if (TextUtils.equals(tab.mTag, tabTag)) {
-                return i;
-            }
-        }
-        return TabState.ALL;
-    }
-
-    private ContactsDataSubscription.PluginChanged<CallMethodInfo> pluginsUpdatedReceiver =
-            new ContactsDataSubscription.PluginChanged<CallMethodInfo>() {
-                @Override
-                public void onChanged(HashMap<ComponentName, CallMethodInfo> pluginInfos) {
-                    updatePlugins(pluginInfos);
-                }
-            };
-
-    // Global CallMethod map that keeps track of the currently displayed plugins
-    HashMap<ComponentName, CallMethodInfo> mCallMethodMap =
-            new HashMap<ComponentName, CallMethodInfo>();
-
-    private InCallPluginInfo getPluginInfo(ComponentName cm) {
-        for (int i = 0; i < mPluginTabInfo.size(); i++) {
-            if (mPluginTabInfo.get(i).mCallMethodInfo.mComponent.equals(cm)) {
-                return mPluginTabInfo.get(i);
-            }
-        }
-        return null;
-    }
-
-    private InCallPluginInfo removePluginInfo(ComponentName cn) {
-        for (int i = 0; i < mPluginTabInfo.size(); i++) {
-            if (mPluginTabInfo.get(i).mCallMethodInfo.mComponent.equals(cn)) {
-                return mPluginTabInfo.remove(i);
-            }
-        }
-        return null;
-    }
-
-    private void removeTabTitle(ComponentName cn) {
-        for (int i = 0; i < mTabTitles.size(); i++) {
-            if (mTabTitles.get(i).mTag.equals(cn.toShortString())) {
-                mTabTitles.remove(i);
-                return;
-            }
-        }
-    }
-
-    private synchronized void updatePlugins(HashMap<ComponentName, CallMethodInfo> callMethodInfo) {
-        HashMap<ComponentName, CallMethodInfo> newCmMap = (HashMap<ComponentName,
-                CallMethodInfo>) CallMethodFilters.getAllEnabledCallMethods(
-                ContactsDataSubscription.get(this));
-        if (DEBUG) Log.d(TAG, "updatePlugins newCmMap size:" + newCmMap.size());
-        boolean updateTabs = false;
-        String lastSelectedTabTag = mTabTitles.get(mActionBarAdapter.getCurrentTab()).mTag;
-        boolean executeFragTransact = false;
-        FragmentTransaction transaction;
-        FragmentManager fragmentManager = getFragmentManager();
-
-        Iterator<Map.Entry<ComponentName, CallMethodInfo>> itr = mCallMethodMap.entrySet()
-                .iterator();
-        while (itr.hasNext()) {
-            Map.Entry<ComponentName, CallMethodInfo> entry = itr.next();
-            ComponentName cn = entry.getKey();
-            if (newCmMap.containsKey(cn)) {
-                // Update plugin info only, the plugin fragment keeps track of its state to
-                // determine if a UI update is necessary
-                CallMethodInfo newCm = newCmMap.remove(cn);
-                InCallPluginInfo pluginInfo = getPluginInfo(cn);
-                if (!TextUtils.equals(newCm.mName, pluginInfo.mCallMethodInfo.mName)) {
-                    // plugin name has changed (may be due to locale change), need to update tabs
-                    updateTabs = true;
-                }
-                pluginInfo.mCallMethodInfo = newCm;
-                pluginInfo.mFragment.updateInCallPluginInfo(pluginInfo);
-                mCallMethodMap.put(cn, newCm);
-            } else {
-                // Remove the tab associated with a plugin that's no longer available
-                updateTabs = true;
-                itr.remove();
-                removeTabTitle(cn);
-                InCallPluginInfo removePlugin = removePluginInfo(cn);
-                if (removePlugin != null) {
-                    transaction = fragmentManager.beginTransaction();
-                    transaction.remove(removePlugin.mFragment);
-                    transaction.commitAllowingStateLoss();
-                    executeFragTransact = true;
-                }
-            }
-        }
-        // add newly added tab from newCmMap
-        for (ComponentName cn : newCmMap.keySet()) {
-            InCallPluginInfo newInfo = new InCallPluginInfo();
-            newInfo.mTabTag = cn.toShortString();
-            PluginContactBrowseListFragment frag = (PluginContactBrowseListFragment)
-                    getFragmentManager().findFragmentByTag(newInfo.mTabTag);
-            if (frag == null) {
-                newInfo.mCallMethodInfo = newCmMap.get(cn);
-                mCallMethodMap.put(cn, newInfo.mCallMethodInfo);
-                mPluginTabInfo.add(0, newInfo);
-                newInfo.mFragment = new PluginContactBrowseListFragment();
-                transaction = fragmentManager.beginTransaction();
-                transaction.add(R.id.tab_pager, newInfo.mFragment, newInfo.mTabTag);
-                transaction.hide(newInfo.mFragment);
-                transaction.commitAllowingStateLoss();
-                newInfo.mFragment.updateInCallPluginInfo(newInfo);
-                newInfo.mFragment.setOnContactListActionListener
-                        (new PluginContactBrowserActionListener());
-                mTabTitles.add(TabState.GROUPS,
-                        new TabEntry(newInfo.mTabTag, newInfo.mCallMethodInfo.mName));
-                updateTabs = true;
-                executeFragTransact = true;
-            }
-        }
-        if (executeFragTransact) {
-            fragmentManager.executePendingTransactions();
-        }
-        // update view pager
-        if (updateTabs) {
-            mPluginLength = mPluginTabInfo.size();
-            mPageStateCount = TabState.COUNT + mPluginLength;
-            mTabStateGroup = TabState.GROUPS + mPluginLength;
-            // update ViewPager
-            mActionBarAdapter.setListener(null);
-            if (mTabPager != null) {
-                mTabPager.setOnPageChangeListener(null);
-            }
-
-            mTabPagerAdapter.notifyDataSetChanged();
-            // re-add all the pages to ViewPagerTabs, including the new plugin tabs
-            mViewPagerTabs.setViewPager(mTabPager);
-            // restore last tab by unique tab tag, if it exsits in the tabs
-            mActionBarAdapter.setCurrentTab(lookupTabTag(lastSelectedTabTag), mPageStateCount,
-                    false);
-            // need to force the ViewPagerTabs to refocus on the right tab, since setViewPager
-            // above causes a state loss
-            mViewPagerTabs.onPageSelected(mActionBarAdapter.getCurrentTab());
-            // force the tabs' underline to be cleared and redrawn
-            mViewPagerTabs.onPageScrolled(mActionBarAdapter.getCurrentTab(), 0, 0);
-            onResumeInit();
-        }
-        updatePluginFab(getTabPositionForTextDirection(mActionBarAdapter.getCurrentTab()));
-    }
-
-    private void updatePluginFab(int tabPosition) {
-        if (mPluginLength > 0 && tabPosition >= TabState.GROUPS && tabPosition < mTabStateGroup) {
-            // it's a plugin tab, update the FAB
-            int pluginIndex = tabPosition - TabState.GROUPS;
-            if (pluginIndex < mPluginTabInfo.size()) {
-                InCallPluginInfo pluginInfo = mPluginTabInfo.get(pluginIndex);
-                // floating button state
-                if (pluginInfo.mCallMethodInfo.mIsAuthenticated ||
-                        CallMethodUtils.isSoftLoggedOut(this, pluginInfo.mCallMethodInfo)) {
-                    mFloatingActionButtonContainer.setVisibility(View.VISIBLE);
-                } else {
-                    mFloatingActionButtonContainer.setVisibility(View.GONE);
-                }
-            }
-        }
     }
 }

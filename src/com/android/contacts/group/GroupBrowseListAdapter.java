@@ -30,7 +30,6 @@ import android.widget.TextView;
 import com.android.contacts.GroupListLoader;
 import com.android.contacts.R;
 import com.android.contacts.common.model.account.AccountType;
-import com.android.contacts.common.model.account.PhoneAccountType;
 import com.android.contacts.common.model.AccountTypeManager;
 import com.google.common.base.Objects;
 
@@ -199,12 +198,7 @@ public class GroupBrowseListAdapter extends BaseAdapter {
         AccountType accountType = mAccountTypeManager.getAccountType(
                 entry.getAccountType(), entry.getDataSet());
         viewCache.accountType.setText(accountType.getDisplayLabel(mContext));
-        // According to the UI SPEC, we will not show the account name for Phone account
-        if (!PhoneAccountType.ACCOUNT_TYPE.equals(entry.getAccountType())) {
-            viewCache.accountName.setText(entry.getAccountName());
-        } else {
-            viewCache.accountName.setText("");
-        }
+        viewCache.accountName.setText(entry.getAccountName());
     }
 
     private static Uri getGroupUriFromId(long groupId) {

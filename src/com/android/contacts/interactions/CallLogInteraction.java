@@ -16,13 +16,9 @@
 package com.android.contacts.interactions;
 
 import com.android.contacts.R;
-import com.android.contacts.common.CallUtil;
 import com.android.contacts.common.util.BitmapUtil;
 import com.android.contacts.common.util.ContactDisplayUtils;
-import com.android.contacts.incall.InCallPluginUtils;
-import com.android.contacts.quickcontact.QuickContactActivity;
 
-import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -31,16 +27,11 @@ import android.graphics.PorterDuff;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.provider.CallLog.Calls;
-import android.provider.ContactsContract;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
-import android.telephony.PhoneNumberUtils;
 import android.text.BidiFormatter;
 import android.text.Spannable;
 import android.text.TextDirectionHeuristics;
-import android.text.TextUtils;
 
-import com.android.contacts.incall.InCallPluginUtils;
-import com.cyanogen.ambient.incall.CallLogConstants;
 /**
  * Represents a call log event interaction, wrapping the columns in
  * {@link android.provider.CallLog.Calls}.
@@ -61,9 +52,6 @@ public class CallLogInteraction implements ContactInteraction {
     private static BidiFormatter sBidiFormatter = BidiFormatter.getInstance();
 
     private ContentValues mValues;
-    private Drawable mIcon;
-    private int mIconResourceId = 0;
-    private String mPluginName;
 
     public CallLogInteraction(ContentValues values) {
         mValues = values;
@@ -72,22 +60,8 @@ public class CallLogInteraction implements ContactInteraction {
     @Override
     public Intent getIntent() {
         String number = getNumber();
-        Intent intent;
-        if (TextUtils.isEmpty(getPluginPkgName())) {
-            // regular PSTN
-            intent = CallUtil.getCallIntent(getNumber());
-        } else {
-            // plugin
-            intent = new Intent();
-            intent.putExtra(InCallPluginUtils.KEY_DATA_ID,
-                    QuickContactActivity.CARD_ENTRY_ID_INCALL_PLUGIN_CALL);
-            intent.putExtra(InCallPluginUtils.KEY_COMPONENT, getPluginPkgName());
-            intent.putExtra(InCallPluginUtils.KEY_NAME, getPluginName());
-            intent.putExtra(InCallPluginUtils.KEY_NUMBER, number);
-            intent.putExtra(InCallPluginUtils.KEY_MIMETYPE, PhoneNumberUtils.isGlobalPhoneNumber
-                    (number) ? ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE : "");
-        }
-        return intent;
+        return number == null ? null : new Intent(Intent.ACTION_CALL).setData(
+                Uri.parse(URI_TARGET_PREFIX + number));
     }
 
     @Override
@@ -105,14 +79,10 @@ public class CallLogInteraction implements ContactInteraction {
     public String getViewBody(Context context) {
         Integer numberType = getCachedNumberType();
         if (numberType == null) {
-            numberType = Phone.TYPE_CUSTOM;
+            return null;
         }
-
-        final String cachedNumberLabel = getCachedNumberLabel();
-        final String label = ContactDisplayUtils.getLabelForCall(context, getNumber(), numberType,
-                cachedNumberLabel, mPluginName);
-
-        return label;
+        return Phone.getTypeLabel(context.getResources(), getCachedNumberType(),
+                getCachedNumberLabel()).toString();
     }
 
     @Override
@@ -124,12 +94,7 @@ public class CallLogInteraction implements ContactInteraction {
 
     @Override
     public Drawable getIcon(Context context) {
-        if (mIcon != null) {
-            // it's a plugin interaction
-            return mIcon;
-        } else {
-            return context.getResources().getDrawable(CALL_LOG_ICON_RES);
-        }
+        return context.getResources().getDrawable(CALL_LOG_ICON_RES);
     }
 
     @Override
@@ -247,29 +212,6 @@ public class CallLogInteraction implements ContactInteraction {
 
     @Override
     public int getIconResourceId() {
-        if (mIconResourceId != 0) {
-            return mIconResourceId;
-        } else {
-            return CALL_LOG_ICON_RES;
-        }
-    }
-
-    public void setPluginInfo(Context context, int resourceId, String pluginName) {
-        ComponentName compName = ComponentName.unflattenFromString(getPluginPkgName());
-        mIcon = InCallPluginUtils.getDrawable(context, resourceId, compName);
-        mIconResourceId = resourceId;
-        mPluginName = pluginName;
-    }
-
-    public String getPluginPkgName() {
-        return mValues.getAsString(CallLogConstants.PLUGIN_PACKAGE_NAME);
-    }
-
-    public String getPluginUserHandle() {
-        return mValues.getAsString(CallLogConstants.PLUGIN_USER_HANDLE);
-    }
-
-    public String getPluginName() {
-        return mPluginName;
+        return CALL_LOG_ICON_RES;
     }
 }

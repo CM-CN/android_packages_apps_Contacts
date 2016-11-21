@@ -24,6 +24,7 @@ import android.content.SharedPreferences;
 import android.content.res.TypedArray;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
+import android.support.v4.content.ContextCompat;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -36,12 +37,14 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout.LayoutParams;
 import android.widget.SearchView.OnCloseListener;
 import android.view.View.OnClickListener;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toolbar;
 
 import com.android.contacts.R;
 import com.android.contacts.activities.ActionBarAdapter.Listener.Action;
+import com.android.contacts.common.compat.CompatUtils;
 import com.android.contacts.list.ContactsRequest;
 
 /**
@@ -67,16 +70,18 @@ public class ActionBarAdapter implements OnCloseListener {
         void onSelectedTabChanged();
 
         void onUpButtonPressed();
+
+        void onPopupItemClick(boolean selectAll);
     }
 
     private static final String EXTRA_KEY_SEARCH_MODE = "navBar.searchMode";
     private static final String EXTRA_KEY_QUERY = "navBar.query";
     private static final String EXTRA_KEY_SELECTED_TAB = "navBar.selectedTab";
     private static final String EXTRA_KEY_SELECTED_MODE = "navBar.selectionMode";
-    private static final String EXTRA_KEY_TAB_COUNT = "navBar.tabCount";
+    private static final String EXTRA_KEY_POPUP_SELECT_ALL = "navBar.popupSelectionAll";
+    private static final String EXTRA_KEY_POPUP_SHOWED = "navBar.popupShowed";
 
     private static final String PERSISTENT_LAST_TAB = "actionBarAdapter.lastTab";
-    private static final String PERSISTENT_LAST_TAB_COUNT = "actionBarAdapter.lastTabCount";
 
     private boolean mSelectionMode;
     private boolean mSearchMode;
@@ -109,6 +114,11 @@ public class ActionBarAdapter implements OnCloseListener {
 
     private boolean mShowHomeIcon;
 
+    // build action bar with a spinner
+    private SelectionMenu mSelectionMenu;
+    private PopupListListener mPopupListListener;
+    private int mSelectionCount;
+
     public interface TabState {
         public static int FAVORITES = 0;
         public static int ALL = 1;
@@ -119,7 +129,6 @@ public class ActionBarAdapter implements OnCloseListener {
     }
 
     private int mCurrentTab = TabState.DEFAULT;
-    private int mTabCount = TabState.COUNT;
 
     public ActionBarAdapter(Activity activity, Listener listener, ActionBar actionBar,
             View portraitTabs, View landscapeTabs, Toolbar toolbar) {
@@ -194,15 +203,16 @@ public class ActionBarAdapter implements OnCloseListener {
                         }
                     }
                 });
+        // Setup popup window
+        setupPopupWindow();
     }
 
-
-    public void initialize(Bundle savedState, ContactsRequest request, int newTabCount) {
+    public void initialize(Bundle savedState, ContactsRequest request) {
         if (savedState == null) {
             mSearchMode = request.isSearchMode();
             mQueryString = request.getQueryString();
             mCurrentTab = loadLastTabPreference();
-            mTabCount = loadLastTabCountPreference();
+            mSelectionMode = false;
         } else {
             mSearchMode = savedState.getBoolean(EXTRA_KEY_SEARCH_MODE);
             mSelectionMode = savedState.getBoolean(EXTRA_KEY_SELECTED_MODE);
@@ -210,14 +220,14 @@ public class ActionBarAdapter implements OnCloseListener {
 
             // Just set to the field here.  The listener will be notified by update().
             mCurrentTab = savedState.getInt(EXTRA_KEY_SELECTED_TAB);
-            mTabCount = savedState.getInt(EXTRA_KEY_TAB_COUNT);
+
+            if (mPopupListListener != null && mSelectionMode) {
+                mPopupListListener.setPopupShowed(savedState.getBoolean(EXTRA_KEY_POPUP_SHOWED));
+                mPopupListListener.setHasSelectAll(
+                        savedState.getBoolean(EXTRA_KEY_POPUP_SELECT_ALL));
+            }
         }
-        if (mTabCount != newTabCount) {
-            mTabCount = newTabCount;
-            saveLastTabCountPreference(mTabCount);
-            mCurrentTab = TabState.DEFAULT;
-        }
-        if (mCurrentTab >= mTabCount || mCurrentTab < 0) {
+        if (mCurrentTab >= TabState.COUNT || mCurrentTab < 0) {
             // Invalid tab index was saved (b/12938207). Restore the default.
             mCurrentTab = TabState.DEFAULT;
         }
@@ -264,23 +274,21 @@ public class ActionBarAdapter implements OnCloseListener {
     /**
      * Save the current tab selection, and notify the listener.
      */
-    public void setCurrentTab(int tab, int tabCount) {
-        setCurrentTab(tab, tabCount, true);
+    public void setCurrentTab(int tab) {
+        setCurrentTab(tab, true);
     }
 
     /**
      * Save the current tab selection.
      */
-    public void setCurrentTab(int tab, int tabCount, boolean notifyListener) {
-        if (tab == mCurrentTab && tabCount == mTabCount) {
+    public void setCurrentTab(int tab, boolean notifyListener) {
+        if (tab == mCurrentTab) {
             return;
         }
         mCurrentTab = tab;
-        mTabCount = tabCount;
 
         if (notifyListener && mListener != null) mListener.onSelectedTabChanged();
         saveLastTabPreference(mCurrentTab);
-        saveLastTabCountPreference(mTabCount);
     }
 
     public int getCurrentTab() {
@@ -421,6 +429,7 @@ public class ActionBarAdapter implements OnCloseListener {
                 if (mSelectionMode) {
                     setPortraitTabHeight(0);
                     addSelectionContainer();
+                    updatePopupWindowView();
                 } else if (mSearchMode) {
                     setPortraitTabHeight(0);
                     addSearchContainer();
@@ -442,6 +451,7 @@ public class ActionBarAdapter implements OnCloseListener {
                 mSelectionContainer.animate().alpha(1);
                 animateTabHeightChange(mMaxPortraitTabHeight, 0);
                 updateDisplayOptions(isSearchModeChanging);
+                setupPopupWindow();
             } else {
                 if (mListener != null) {
                     mListener.onAction(Action.BEGIN_STOPPING_SEARCH_AND_SELECTION_MODE);
@@ -484,22 +494,108 @@ public class ActionBarAdapter implements OnCloseListener {
     }
 
     public void setSelectionCount(int selectionCount) {
-        TextView textView = (TextView) mSelectionContainer.findViewById(R.id.selection_count_text);
-        if (selectionCount == 0) {
-            textView.setVisibility(View.GONE);
-        } else {
-            textView.setVisibility(View.VISIBLE);
+        mSelectionCount = selectionCount;
+        Button selectMenu = (Button) mSelectionContainer.findViewById(R.id.selection_menu);
+        selectMenu.setText(String.valueOf(mSelectionCount));
+        mSelectionMenu.getPopupList().clearItems();
+        mSelectionMenu.getPopupList().addItem(mSelectionMenu.SELECTED,
+                String.valueOf(mSelectionCount));
+        mSelectionMenu.getPopupList().addItem(mSelectionMenu.SELECT_OR_DESELECT,
+                        mActivity.getString(mPopupListListener
+                                .getHasSelectAll() ? R.string.menu_select_none
+                                : R.string.menu_select_all));
+    }
+
+    private class PopupListListener
+            implements PopupList.OnPopupItemClickListener {
+        private boolean mHasSelectAll = false;
+        private boolean mPopupShowed = false;
+
+        public void setPopupShowed(boolean popupShowed) {
+            mPopupShowed = popupShowed;
         }
-        textView.setText(String.valueOf(selectionCount));
+
+        public boolean getPopupShowed() {
+            return mPopupShowed;
+        }
+
+        public void setHasSelectAll(boolean hasSelectAll) {
+            mHasSelectAll = hasSelectAll;
+        }
+
+        public boolean getHasSelectAll() {
+            return mHasSelectAll;
+        }
+
+        @Override
+        public boolean onPopupItemClick(int itemId) {
+            if (itemId == SelectionMenu.SELECT_OR_DESELECT) {
+                mHasSelectAll = !mHasSelectAll;
+                mListener.onPopupItemClick(mHasSelectAll);
+                if (mSelectionMenu != null) {
+                    mSelectionMenu.updateSelectAllMode(mHasSelectAll);
+                }
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private void updatePopupWindowView() {
+        if (mSelectionMenu != null && mPopupListListener != null) {
+            mSelectionMenu.updateSelectAllMode(mPopupListListener.getHasSelectAll());
+        }
+    }
+
+    public void updatePopupWindowViewIfNeed(boolean hasSelectAll) {
+        if (mPopupListListener != null) {
+            mPopupListListener.setHasSelectAll(hasSelectAll);
+            updatePopupWindowView();
+        }
+    }
+
+    public void onClosePopupWindow() {
+        if (mSelectionMenu != null) {
+            mSelectionMenu.dismiss();
+        }
+    }
+
+    private void setupPopupWindow() {
+        if (mPopupListListener == null) {
+            mPopupListListener = new PopupListListener();
+        }
+        if (mSelectionMenu == null) {
+                mSelectionMenu = new SelectionMenu(mActivity,
+                        (Button) mSelectionContainer.findViewById(R.id.selection_menu),
+                        mPopupListListener);
+                mSelectionMenu.getPopupList().addItem(mSelectionMenu.SELECTED,
+                        String.valueOf(mSelectionCount));
+                mSelectionMenu.getPopupList().addItem(mSelectionMenu.SELECT_OR_DESELECT,
+                        mActivity.getString(R.string.menu_select_all));
+        }
+    }
+
+    public void showPopupWindowIfNeed() {
+        if (mSelectionMenu != null && mPopupListListener != null){
+            if (mPopupListListener.getPopupShowed()) {
+                mSelectionMenu.showPopupList();
+            } else {
+                mSelectionMenu.dismiss();
+            }
+        }
     }
 
     private void updateStatusBarColor() {
+        if (!CompatUtils.isLollipopCompatible()) {
+            return; // we can't change the status bar color prior to Lollipop
+        }
         if (mSelectionMode) {
-            int cabStatusBarColor = mActivity.getResources().getColor(
+            final int cabStatusBarColor = mActivity.getResources().getColor(
                     R.color.contextual_selection_bar_status_bar_color);
             mActivity.getWindow().setStatusBarColor(cabStatusBarColor);
         } else {
-            int normalStatusBarColor = mActivity.getColor(R.color.primary_color_dark);
+            final int normalStatusBarColor = ContextCompat.getColor(
+                    mActivity, R.color.primary_color_dark);
             mActivity.getWindow().setStatusBarColor(normalStatusBarColor);
         }
     }
@@ -562,7 +658,12 @@ public class ActionBarAdapter implements OnCloseListener {
         outState.putBoolean(EXTRA_KEY_SELECTED_MODE, mSelectionMode);
         outState.putString(EXTRA_KEY_QUERY, mQueryString);
         outState.putInt(EXTRA_KEY_SELECTED_TAB, mCurrentTab);
-        outState.putInt(EXTRA_KEY_TAB_COUNT, mTabCount);
+        if (mSelectionMode) {
+            outState.putBoolean(EXTRA_KEY_POPUP_SELECT_ALL, mPopupListListener != null
+                    ? mPopupListListener.getHasSelectAll() : false);
+            outState.putBoolean(EXTRA_KEY_POPUP_SHOWED, mSelectionMenu != null
+                    ? mSelectionMenu.isPopupListShow() : false);
+        }
     }
 
     public void setFocusOnSearchView() {
@@ -588,18 +689,6 @@ public class ActionBarAdapter implements OnCloseListener {
         } catch (IllegalArgumentException e) {
             // Preference is corrupt?
             return TabState.DEFAULT;
-        }
-    }
-
-    private void saveLastTabCountPreference(int tabCount) {
-        mPrefs.edit().putInt(PERSISTENT_LAST_TAB_COUNT, tabCount).apply();
-    }
-
-    private int loadLastTabCountPreference() {
-        try {
-            return mPrefs.getInt(PERSISTENT_LAST_TAB_COUNT, TabState.COUNT);
-        } catch (ClassCastException e) {
-            return TabState.COUNT;
         }
     }
 

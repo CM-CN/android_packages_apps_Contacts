@@ -39,6 +39,7 @@ import android.os.Parcelable;
 import android.provider.ContactsContract.Contacts;
 import android.provider.ContactsContract.Intents;
 import android.text.TextUtils;
+import android.text.InputType;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -68,7 +69,6 @@ import com.android.contacts.common.ContactPhotoManager;
 import com.android.contacts.common.ContactPhotoManager.DefaultImageRequest;
 import com.android.contacts.common.model.account.AccountType;
 import com.android.contacts.common.model.account.AccountWithDataSet;
-import com.android.contacts.common.model.account.PhoneAccountType;
 import com.android.contacts.common.editor.SelectAccountDialogFragment;
 import com.android.contacts.group.SuggestedMemberListAdapter.SuggestedMember;
 import com.android.contacts.common.model.AccountTypeManager;
@@ -104,6 +104,10 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
     private static final String CURRENT_EDITOR_TAG = "currentEditorForAccount";
 
     public static final int REQUEST_CODE_PICK_GROUP_MEM = 1001;
+    private static final int MAX_CACHE_MEMBER_SIZE = 500;
+
+    //when save completed,close activity directly,no need reload group member.
+    private boolean mClose = false;
 
     public static interface Listener {
         /**
@@ -238,7 +242,7 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
             onRestoreInstanceState(savedInstanceState);
             if (mStatus == Status.SELECTING_ACCOUNT) {
                 // Account select dialog is showing.  Don't setup the editor yet.
-            } else if (mStatus == Status.LOADING) {
+            } else if (mStatus == Status.LOADING || mListToDisplay.size() == 0) {
                 startGroupMetaDataLoader();
             } else {
                 setupEditorForAccount();
@@ -288,9 +292,21 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
         outState.putBoolean(KEY_GROUP_NAME_IS_READ_ONLY, mGroupNameIsReadOnly);
         outState.putString(KEY_ORIGINAL_GROUP_NAME, mOriginalGroupName);
 
-        outState.putParcelableArrayList(KEY_MEMBERS_TO_ADD, mListMembersToAdd);
-        outState.putParcelableArrayList(KEY_MEMBERS_TO_REMOVE, mListMembersToRemove);
-        outState.putParcelableArrayList(KEY_MEMBERS_TO_DISPLAY, mListToDisplay);
+        // if size is too large,it will cause TransactionTooLargeException,so add limit here
+        if (getCacheSize() <= MAX_CACHE_MEMBER_SIZE) {
+            outState.putParcelableArrayList(KEY_MEMBERS_TO_ADD,
+                    mListMembersToAdd);
+            outState.putParcelableArrayList(KEY_MEMBERS_TO_REMOVE,
+                    mListMembersToRemove);
+            outState.putParcelableArrayList(KEY_MEMBERS_TO_DISPLAY,
+                    mListToDisplay);
+        } else if (mListMembersToAdd.size() + mListMembersToRemove.size()
+                < MAX_CACHE_MEMBER_SIZE) {
+            outState.putParcelableArrayList(KEY_MEMBERS_TO_ADD,
+                    mListMembersToAdd);
+            outState.putParcelableArrayList(KEY_MEMBERS_TO_REMOVE,
+                    mListMembersToRemove);
+        }
     }
 
     private void onRestoreInstanceState(Bundle state) {
@@ -309,6 +325,20 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
         mListMembersToAdd = state.getParcelableArrayList(KEY_MEMBERS_TO_ADD);
         mListMembersToRemove = state.getParcelableArrayList(KEY_MEMBERS_TO_REMOVE);
         mListToDisplay = state.getParcelableArrayList(KEY_MEMBERS_TO_DISPLAY);
+
+        if (mListMembersToAdd == null)
+            mListMembersToAdd = new ArrayList<Member>();
+        if (mListMembersToRemove == null)
+            mListMembersToRemove = new ArrayList<Member>();
+        if (mListToDisplay == null)
+            mListToDisplay = new ArrayList<Member>();
+
+    }
+
+    private int getCacheSize() {
+        int size = mListMembersToAdd.size() + mListMembersToRemove.size()
+                + mListToDisplay.size();
+        return size;
     }
 
     public void setContentResolver(ContentResolver resolver) {
@@ -424,13 +454,9 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
             ImageView accountIcon = (ImageView) editorView.findViewById(R.id.account_icon);
             TextView accountTypeTextView = (TextView) editorView.findViewById(R.id.account_type);
             TextView accountNameTextView = (TextView) editorView.findViewById(R.id.account_name);
-            if (!TextUtils.isEmpty(mAccountName)
-                    && !SimContactsConstants.PHONE_NAME.equals(mAccountName)) {
+            if (!TextUtils.isEmpty(mAccountName)) {
                 accountNameTextView.setText(
                         mContext.getString(R.string.from_account_format, mAccountName));
-                accountNameTextView.setVisibility(View.VISIBLE);
-            } else {
-                accountNameTextView.setVisibility(View.GONE);
             }
             accountTypeTextView.setText(accountTypeDisplayLabel);
             accountIcon.setImageDrawable(accountType.getDisplayIcon(mContext));
@@ -442,7 +468,7 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
         if (mAutoCompleteTextView != null) {
             mAutoCompleteAdapter = new SuggestedMemberListAdapter(mContext,
                     android.R.layout.simple_dropdown_item_1line);
-            mAutoCompleteTextView.setThreshold(1);
+            mAutoCompleteTextView.setThreshold(2);
             mAutoCompleteAdapter.setContentResolver(mContentResolver);
             mAutoCompleteAdapter.setAccountType(mAccountType);
             mAutoCompleteAdapter.setAccountName(mAccountName);
@@ -479,9 +505,9 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
                     intent.putExtra(SimContactsConstants.IS_CONTACT, true);
                     intent.putExtra(SimContactsConstants.ACCOUNT_NAME, mAccountName);
                     intent.putExtra(SimContactsConstants.ACCOUNT_TYPE, mAccountType);
-                    intent.putExtra(MultiPickContactActivity.EXTRA_GROUP_ACTION,
-                            MultiPickContactActivity.GROUP_ACTION_ADD_MEMBER);
-                    intent.putExtra(MultiPickContactActivity.EXTRA_GROUP_ID, mGroupId);
+                    intent.putExtra(MultiPickContactActivity.ADD_MOVE_GROUP_MEMBER_KEY,
+                            MultiPickContactActivity.ACTION_ADD_GROUP_MEMBER);
+                    intent.putExtra(MultiPickContactActivity.KEY_GROUP_ID, mGroupId);
                     startActivityForResult(intent, REQUEST_CODE_PICK_GROUP_MEM);
                 }
             });
@@ -489,6 +515,8 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
 
         // If the group name is ready only, don't let the user focus on the field.
         mGroupNameView.setFocusable(!mGroupNameIsReadOnly);
+        if (mGroupNameIsReadOnly)
+            mGroupNameView.setInputType(InputType.TYPE_NULL);
         if(isNewEditor) {
             mRootView.addView(editorView);
         }
@@ -651,7 +679,7 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
             }
             return false;
         }
-
+        mClose = true;
         // If we are about to close the editor - there is no need to refresh the data
         getLoaderManager().destroyLoader(LOADER_EXISTING_MEMBERS);
 
@@ -832,11 +860,14 @@ public class GroupEditorFragment extends Fragment implements SelectAccountDialog
 
         @Override
         public void onLoadFinished(Loader<Cursor> loader, Cursor data) {
-            bindGroupMetaData(data);
+            if (!mClose) {
+                bindGroupMetaData(data);
 
-            // Load existing members
-            getLoaderManager().initLoader(LOADER_EXISTING_MEMBERS, null,
-                    mGroupMemberListLoaderListener);
+                // Load existing members
+                getLoaderManager().initLoader(LOADER_EXISTING_MEMBERS, null,
+                        mGroupMemberListLoaderListener);
+            }
+            mClose = false;
         }
 
         @Override

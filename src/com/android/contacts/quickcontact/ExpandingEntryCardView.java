@@ -15,24 +15,28 @@
  */
 package com.android.contacts.quickcontact;
 
+import android.app.AlertDialog;
 import android.animation.Animator;
 import android.animation.Animator.AnimatorListener;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.Resources;
+import android.content.SharedPreferences;
 import android.graphics.ColorFilter;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.provider.Settings;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Message;
 import android.support.v7.widget.CardView;
 import android.text.Spannable;
-import android.text.SpannableString;
 import android.text.TextUtils;
-import android.text.style.ForegroundColorSpan;
-
 import android.transition.ChangeBounds;
 import android.transition.Fade;
 import android.transition.Transition;
@@ -48,16 +52,24 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.CompoundButton.OnCheckedChangeListener;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.LinearLayout.LayoutParams;
 import android.widget.RelativeLayout;
+import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.android.contacts.R;
+import com.android.contacts.common.CallUtil;
+import com.android.contacts.common.GeoUtil;
+import com.android.contacts.common.MoreContactUtils;
 import com.android.contacts.common.dialog.CallSubjectDialog;
-
-import com.android.phone.common.incall.CallMethodInfo;
+import com.android.contacts.detail.ContactDisplayUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -74,6 +86,20 @@ public class ExpandingEntryCardView extends CardView {
 
     public static final int DURATION_EXPAND_ANIMATION_CHANGE_BOUNDS = 300;
     public static final int DURATION_COLLAPSE_ANIMATION_CHANGE_BOUNDS = 300;
+    public static final int PRESENCE_AVAILABILITY_FETCH = 0;
+
+    private static final String SHARE_FILE_NMAE = "video_callling_reminder";
+    private boolean isSupportVideoCall = false;
+    private boolean isEnable = false;
+    private Switch mVideoCalling;
+    private Context mContext;
+    private int mDefaultEnable;
+    private int mEnable;
+    private VideoCallingCallback mVideoCallingCallback = null;
+    private String mContactName;
+    private Handler mHandler;
+    private boolean mEnablePresence = false;
+    private boolean mHaveFetched = false;
 
     private static final Property<View, Integer> VIEW_LAYOUT_HEIGHT_PROPERTY =
             new Property<View, Integer>(Integer.class, "height") {
@@ -102,40 +128,33 @@ public class ExpandingEntryCardView extends CardView {
         // Button action will open the call with subject dialog.
         public static final int ACTION_CALL_WITH_SUBJECT = 3;
 
-        private int mId;
-        private Drawable mIcon;
-        private String mHeader;
-        private String mSubHeader;
-        private Drawable mSubHeaderIcon;
-        private String mActionText;
-        private String mText;
-        private Drawable mTextIcon;
+        private final int mId;
+        private final Drawable mIcon;
+        private final String mHeader;
+        private final String mSubHeader;
+        private final Drawable mSubHeaderIcon;
+        private final String mText;
+        private final Drawable mTextIcon;
         private Spannable mPrimaryContentDescription;
-        private Intent mIntent;
-        private Drawable mAlternateIcon;
-        private Intent mAlternateIntent;
-        private String mAlternateContentDescription;
-        private boolean mShouldApplyColor;
-        private boolean mIsEditable;
-        private EntryContextMenuInfo mEntryContextMenuInfo;
-        private String mThirdText;
-        private Drawable mThirdIcon;
-        private Intent mThirdIntent;
-        private String mThirdContentDescription;
-        private int mThirdAction;
-        private Bundle mThirdExtras;
-        private int mIconResourceId;
-        private CallMethodInfo mCallMethodInfo;
-        private List<Entry> mContainerList;
-        private List<List<Entry>> mParentList;
-
-        public Entry () {}
+        private final Intent mIntent;
+        private final Drawable mAlternateIcon;
+        private final Intent mAlternateIntent;
+        private Spannable mAlternateContentDescription;
+        private final boolean mShouldApplyColor;
+        private final boolean mIsEditable;
+        private final EntryContextMenuInfo mEntryContextMenuInfo;
+        private final Drawable mThirdIcon;
+        private final Intent mThirdIntent;
+        private final String mThirdContentDescription;
+        private final int mIconResourceId;
+        private final int mThirdAction;
+        private final Bundle mThirdExtras;
 
         public Entry(int id, Drawable mainIcon, String header, String subHeader,
                 Drawable subHeaderIcon, String text, Drawable textIcon,
                 Spannable primaryContentDescription, Intent intent,
-                Drawable alternateIcon, Intent alternateIntent, String alternateContentDescription,
-                boolean shouldApplyColor, boolean isEditable,
+                Drawable alternateIcon, Intent alternateIntent,
+                Spannable alternateContentDescription, boolean shouldApplyColor, boolean isEditable,
                 EntryContextMenuInfo entryContextMenuInfo, Drawable thirdIcon, Intent thirdIntent,
                 String thirdContentDescription, int thirdAction, Bundle thirdExtras,
                 int iconResourceId) {
@@ -144,7 +163,6 @@ public class ExpandingEntryCardView extends CardView {
             mHeader = header;
             mSubHeader = subHeader;
             mSubHeaderIcon = subHeaderIcon;
-            mActionText = null;
             mText = text;
             mTextIcon = textIcon;
             mPrimaryContentDescription = primaryContentDescription;
@@ -155,46 +173,12 @@ public class ExpandingEntryCardView extends CardView {
             mShouldApplyColor = shouldApplyColor;
             mIsEditable = isEditable;
             mEntryContextMenuInfo = entryContextMenuInfo;
-            mThirdText = null;
             mThirdIcon = thirdIcon;
             mThirdIntent = thirdIntent;
             mThirdContentDescription = thirdContentDescription;
             mThirdAction = thirdAction;
             mThirdExtras = thirdExtras;
             mIconResourceId = iconResourceId;
-        }
-
-        public Entry(int id, Drawable mainIcon, String header, String subHeader, Drawable
-                subHeaderIcon, String actionText, Intent intent, Drawable alternateIcon, Intent
-                alternateIntent, String thirdText, Drawable thirdIcon, Intent thirdIntent,
-                int thirdAction, int iconResourceId, CallMethodInfo cmi, List<Entry> containerList,
-                List<List<Entry>> parentList) {
-            mId = id;
-            mIcon = mainIcon;
-            mHeader = header;
-            mSubHeader = subHeader;
-            mSubHeaderIcon = subHeaderIcon;
-            mActionText = actionText;
-            mText = null;
-            mTextIcon = null;
-            mPrimaryContentDescription = null;
-            mIntent = intent;
-            mAlternateIcon = alternateIcon;
-            mAlternateIntent = alternateIntent;
-            mAlternateContentDescription = null;
-            mShouldApplyColor = false;
-            mIsEditable = false;
-            mEntryContextMenuInfo = null;
-            mThirdText = thirdText;
-            mThirdIcon = thirdIcon;
-            mThirdIntent = thirdIntent;
-            mThirdContentDescription = null;
-            mThirdAction = thirdAction;
-            mThirdExtras = null;
-            mIconResourceId = iconResourceId;
-            mCallMethodInfo = cmi;
-            mContainerList = containerList;
-            mParentList = parentList;
         }
 
         Drawable getIcon() {
@@ -211,10 +195,6 @@ public class ExpandingEntryCardView extends CardView {
 
         Drawable getSubHeaderIcon() {
             return mSubHeaderIcon;
-        }
-
-        public String getActionText() {
-            return mActionText;
         }
 
         public String getText() {
@@ -241,7 +221,7 @@ public class ExpandingEntryCardView extends CardView {
             return mAlternateIntent;
         }
 
-        String getAlternateContentDescription() {
+        Spannable getAlternateContentDescription() {
             return mAlternateContentDescription;
         }
 
@@ -259,10 +239,6 @@ public class ExpandingEntryCardView extends CardView {
 
         EntryContextMenuInfo getEntryContextMenuInfo() {
             return mEntryContextMenuInfo;
-        }
-
-        String getThirdText() {
-            return mThirdText;
         }
 
         Drawable getThirdIcon() {
@@ -288,18 +264,6 @@ public class ExpandingEntryCardView extends CardView {
         public Bundle getThirdExtras() {
             return mThirdExtras;
         }
-
-        CallMethodInfo getCallMethodInfo() {
-            return mCallMethodInfo;
-        }
-
-        List<List<Entry>> getParentList() {
-            return mParentList;
-        }
-
-        List<Entry> getContainerList() {
-            return mContainerList;
-        }
     }
 
     public interface ExpandingEntryCardViewListener {
@@ -309,6 +273,7 @@ public class ExpandingEntryCardView extends CardView {
     }
 
     private View mExpandCollapseButton;
+    private View mExpandSwitchVideoCall;
     private TextView mExpandCollapseTextView;
     private TextView mTitleTextView;
     private CharSequence mExpandButtonText;
@@ -360,18 +325,49 @@ public class ExpandingEntryCardView extends CardView {
         }
     };
 
+    private final OnCheckedChangeListener mSwitchVideoCalling = new OnCheckedChangeListener() {
+
+        @Override
+        public void onCheckedChanged(CompoundButton buttonView,
+                boolean isChecked) {
+            CallUtil.createVideoCallingDialog(isChecked, mContext);
+            CallUtil.saveVideoCallConfig(mContext,isChecked);
+            if (mVideoCallingCallback != null)
+                mVideoCallingCallback.updateContact();
+        }
+    };
+
+    public interface VideoCallingCallback {
+        public void updateContact();
+    }
+
     public ExpandingEntryCardView(Context context) {
         this(context, null);
+        mContext = context;
     }
 
     public ExpandingEntryCardView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        mContext = context;
         LayoutInflater inflater = LayoutInflater.from(context);
         View expandingEntryCardView = inflater.inflate(R.layout.expanding_entry_card_view, this);
         mEntriesViewGroup = (LinearLayout)
                 expandingEntryCardView.findViewById(R.id.content_area_linear_layout);
         mTitleTextView = (TextView) expandingEntryCardView.findViewById(R.id.title);
         mContainer = (LinearLayout) expandingEntryCardView.findViewById(R.id.container);
+
+        mEnablePresence = getResources().getBoolean(R.bool.config_presence_enabled);
+        Log.d(TAG, "ExpandingEntryCardView mEnablePresence = " + mEnablePresence);
+        if (mEnablePresence) {
+            mVideoCalling = (Switch) expandingEntryCardView
+                    .findViewById(R.id.switch_video_call);
+            mVideoCalling.setVisibility(View.VISIBLE);
+            mDefaultEnable = Settings.System.getInt(mContext.getContentResolver(),
+                    CallUtil.CONFIG_VIDEO_CALLING,CallUtil.DISABLE_VIDEO_CALLING);
+            mEnable = mDefaultEnable;
+            mVideoCalling.setChecked(mDefaultEnable == CallUtil.ENABLE_VIDEO_CALLING);
+            mVideoCalling.setOnCheckedChangeListener(mSwitchVideoCalling);
+        }
 
         mExpandCollapseButton = inflater.inflate(
                 R.layout.quickcontact_expanding_entry_card_button, this, false);
@@ -412,6 +408,9 @@ public class ExpandingEntryCardView extends CardView {
         mNumEntries = 0;
         mAllEntriesInflated = false;
         mShowFirstEntryTypeTwice = showFirstEntryTypeTwice;
+        if (isSupportVideoCall) {
+            mVideoCalling.setVisibility(View.VISIBLE);
+        }
         for (List<Entry> entryList : mEntries) {
             mNumEntries += entryList.size();
             mEntryViews.add(new ArrayList<View>());
@@ -469,6 +468,10 @@ public class ExpandingEntryCardView extends CardView {
         mOnCreateContextMenuListener = listener;
     }
 
+    public void setCallBack(VideoCallingCallback callback){
+        mVideoCallingCallback = callback;
+    }
+
     private List<View> calculateEntriesToRemoveDuringCollapse() {
         final List<View> viewsToRemove = getViewsToDisplay(true);
         final List<View> viewsCollapsed = getViewsToDisplay(false);
@@ -483,7 +486,7 @@ public class ExpandingEntryCardView extends CardView {
             mEntriesViewGroup.addView(view);
         }
 
-        mContainer.removeView(mExpandCollapseButton);
+        removeView(mExpandCollapseButton);
         if (mCollapsedEntriesCount < mNumEntries
                 && mExpandCollapseButton.getParent() == null && !mIsAlwaysExpanded) {
             mContainer.addView(mExpandCollapseButton, -1);
@@ -616,10 +619,30 @@ public class ExpandingEntryCardView extends CardView {
         }
     }
 
+    public void disPlayVideoCallSwitch(boolean isSupportVideocall) {
+        this.isSupportVideoCall = isSupportVideocall;
+    }
+
     /**
      * Inflates the initial entries to be shown.
      */
     private void inflateInitialEntries(LayoutInflater layoutInflater) {
+
+        if (mEnablePresence) {
+            mHandler = new Handler(){
+
+                @Override
+                public void handleMessage(Message msg) {
+                    switch (msg.what) {
+                        case PRESENCE_AVAILABILITY_FETCH:
+                            if (mVideoCallingCallback != null )
+                                mVideoCallingCallback.updateContact();
+                            Log.d(TAG, "AvailabilityFetch result updateContact");
+                            break;
+                    }
+                }
+            };
+        }
         // If the number of collapsed entries equals total entries, inflate all
         if (mCollapsedEntriesCount == mNumEntries) {
             inflateAllEntries(layoutInflater);
@@ -692,6 +715,14 @@ public class ExpandingEntryCardView extends CardView {
         applyColor();
     }
 
+    public void setEntryContactName(String name){
+        mContactName = name;
+    }
+
+    public String getEntryContactName(){
+        return mContactName;
+    }
+
     public void setEntryHeaderColor(int color) {
         if (mEntries != null) {
             for (List<View> entryList : mEntryViews) {
@@ -734,17 +765,12 @@ public class ExpandingEntryCardView extends CardView {
                         Drawable alternateIcon = entry.getAlternateIcon();
                         if (alternateIcon != null) {
                             alternateIcon.mutate();
-                            if (entry.getCallMethodInfo() == null) {
-                                // not from a plugin
-                                alternateIcon.setColorFilter(mThemeColorFilter);
-                            }
+                            alternateIcon.setColorFilter(mThemeColorFilter);
                         }
                         Drawable thirdIcon = entry.getThirdIcon();
                         if (thirdIcon != null) {
                             thirdIcon.mutate();
-                            if (entry.getCallMethodInfo() == null) {
-                                thirdIcon.setColorFilter(mThemeColorFilter);
-                            }
+                            thirdIcon.setColorFilter(mThemeColorFilter);
                         }
                     }
                 }
@@ -771,20 +797,20 @@ public class ExpandingEntryCardView extends CardView {
         if (entry.getIcon() != null) {
             icon.setImageDrawable(entry.getIcon());
         }
+
+        final TextView home = (TextView) view.findViewById(R.id.home);
         final TextView header = (TextView) view.findViewById(R.id.header);
-        if (!TextUtils.isEmpty(entry.getHeader())) {
-            header.setText(entry.getHeader());
+        String num = entry.getHeader();
+        if (!TextUtils.isEmpty(num)) {
+            header.setText(num);
+            home.setText(GeoUtil.getGeocodedLocationFor(getContext(), num));
         } else {
             header.setVisibility(View.GONE);
         }
 
         final TextView subHeader = (TextView) view.findViewById(R.id.sub_header);
         if (!TextUtils.isEmpty(entry.getSubHeader())) {
-            if (entry.getActionText() == null) {
-                subHeader.setText(entry.getSubHeader());
-            } else {
-                subHeader.setText(entry.getSubHeader(), TextView.BufferType.SPANNABLE);
-            }
+            subHeader.setText(entry.getSubHeader());
         } else {
             subHeader.setVisibility(View.GONE);
         }
@@ -794,13 +820,6 @@ public class ExpandingEntryCardView extends CardView {
             subHeaderIcon.setImageDrawable(entry.getSubHeaderIcon());
         } else {
             subHeaderIcon.setVisibility(View.GONE);
-        }
-
-        if (!TextUtils.isEmpty(entry.getActionText())) {
-            Spannable actionText = new SpannableString(" " + entry.getActionText());
-            actionText.setSpan(new ForegroundColorSpan(mThemeColor), 0, actionText.length(),
-                    Spannable.SPAN_INCLUSIVE_EXCLUSIVE);
-            subHeader.append(actionText);
         }
 
         final TextView text = (TextView) view.findViewById(R.id.text);
@@ -819,7 +838,7 @@ public class ExpandingEntryCardView extends CardView {
 
         if (entry.getIntent() != null) {
             view.setOnClickListener(mOnClickListener);
-            view.setTag(new EntryTag(entry.getId(), entry.getIntent(), entry));
+            view.setTag(new EntryTag(entry.getId(), entry.getIntent()));
         }
 
         if (entry.getIntent() == null && entry.getEntryContextMenuInfo() == null) {
@@ -857,21 +876,43 @@ public class ExpandingEntryCardView extends CardView {
 
         final ImageView alternateIcon = (ImageView) view.findViewById(R.id.icon_alternate);
         final ImageView thirdIcon = (ImageView) view.findViewById(R.id.third_icon);
-        final TextView thirdTextView = (TextView) view.findViewById(R.id.third_text);
 
         if (entry.getAlternateIcon() != null && entry.getAlternateIntent() != null) {
             alternateIcon.setImageDrawable(entry.getAlternateIcon());
             alternateIcon.setOnClickListener(mOnClickListener);
-            alternateIcon.setTag(new EntryTag(entry.getId(), entry.getAlternateIntent(), entry));
+            alternateIcon.setTag(new EntryTag(entry.getId(), entry.getAlternateIntent()));
             alternateIcon.setVisibility(View.VISIBLE);
             alternateIcon.setContentDescription(entry.getAlternateContentDescription());
         }
 
-        if (entry.getThirdIcon() != null && entry.getThirdAction() != Entry.ACTION_NONE) {
+        boolean showVTicon = false;
+        if (mEnablePresence) {
+            if (mEnable == CallUtil.ENABLE_VIDEO_CALLING) {
+                showVTicon = ContactDisplayUtils.getVTCapability(entry.getHeader());
+                if(!mHaveFetched){
+                    new Thread(new Runnable(){
+                        public void run(){
+                            if (null != entry.getHeader()) {
+                                boolean oldVT = ContactDisplayUtils.getVTCapability(
+                                            entry.getHeader());
+                                boolean newVT = ContactDisplayUtils.startAvailabilityFetch(
+                                            entry.getHeader());
+                                if (oldVT != newVT) {
+                                    mHaveFetched = true;
+                                    mHandler.sendEmptyMessage(PRESENCE_AVAILABILITY_FETCH);
+                                }
+                            }
+                        }
+                    }).start();
+                }
+            }
+        }
+        if (entry.getThirdIcon() != null && entry.getThirdAction() != Entry.ACTION_NONE
+                && (mEnablePresence ? showVTicon : true/*This true is used for the keep AOSP*/)) {
             thirdIcon.setImageDrawable(entry.getThirdIcon());
             if (entry.getThirdAction() == Entry.ACTION_INTENT) {
                 thirdIcon.setOnClickListener(mOnClickListener);
-                thirdIcon.setTag(new EntryTag(entry.getId(), entry.getThirdIntent(), entry));
+                thirdIcon.setTag(new EntryTag(entry.getId(), entry.getThirdIntent()));
             } else if (entry.getThirdAction() == Entry.ACTION_CALL_WITH_SUBJECT) {
                 thirdIcon.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -891,23 +932,6 @@ public class ExpandingEntryCardView extends CardView {
             }
             thirdIcon.setVisibility(View.VISIBLE);
             thirdIcon.setContentDescription(entry.getThirdContentDescription());
-        }
-
-        if (!TextUtils.isEmpty(entry.getThirdText()) && entry.getThirdIntent() != null) {
-            thirdTextView.setText(entry.getThirdText());
-            thirdTextView.setOnClickListener(mOnClickListener);
-            thirdTextView.setTag(new EntryTag(entry.getId(), entry.getThirdIntent(), entry));
-            thirdTextView.setTextColor(mThemeColor);
-            thirdTextView.setVisibility(View.VISIBLE);
-            // set rule to make sure the header wraps before the third text
-            if (header != null) {
-                RelativeLayout.LayoutParams headerLayoutParams =
-                        (RelativeLayout.LayoutParams) header.getLayoutParams();
-                headerLayoutParams.addRule(RelativeLayout.START_OF, thirdTextView.getId());
-                header.setLayoutParams(headerLayoutParams);
-            }
-        } else {
-            thirdTextView.setVisibility(View.GONE);
         }
 
         // Set a custom touch listener for expanding the extra icon touch areas
@@ -943,10 +967,8 @@ public class ExpandingEntryCardView extends CardView {
                     && mEntries.get(0).size() > 1) {
                 numberOfMimeTypesShown--;
             }
-            // Inflate badges if not yet created or not up to date
+            // Inflate badges if not yet created
             if (mBadges.size() < mEntries.size() - numberOfMimeTypesShown) {
-                mBadges.clear();
-                mBadgeIds.clear();
                 for (int i = numberOfMimeTypesShown; i < mEntries.size(); i++) {
                     Drawable badgeDrawable = mEntries.get(i).get(0).getIcon();
                     int badgeResourceId = mEntries.get(i).get(0).getIconResourceId();
@@ -1159,7 +1181,6 @@ public class ExpandingEntryCardView extends CardView {
         private final String mMimeType;
         private final long mId;
         private final boolean mIsSuperPrimary;
-        private String mData;
 
         public EntryContextMenuInfo(String copyText, String copyLabel, String mimeType, long id,
                 boolean isSuperPrimary) {
@@ -1168,16 +1189,6 @@ public class ExpandingEntryCardView extends CardView {
             mMimeType = mimeType;
             mId = id;
             mIsSuperPrimary = isSuperPrimary;
-        }
-
-        public EntryContextMenuInfo(String copyText, String copyLabel, String mimeType, long id,
-                boolean isSuperPrimary, String data) {
-            mCopyText = copyText;
-            mCopyLabel = copyLabel;
-            mMimeType = mimeType;
-            mId = id;
-            mIsSuperPrimary = isSuperPrimary;
-            mData = data;
         }
 
         public String getCopyText() {
@@ -1199,27 +1210,15 @@ public class ExpandingEntryCardView extends CardView {
         public boolean isSuperPrimary() {
             return mIsSuperPrimary;
         }
-
-        public String getData() {
-            return mData;
-        }
     }
 
     static final class EntryTag {
         private final int mId;
         private final Intent mIntent;
-        private final Entry mEntry;
 
         public EntryTag(int id, Intent intent) {
             mId = id;
             mIntent = intent;
-            mEntry = null;
-        }
-
-        public EntryTag(int id, Intent intent, Entry entry) {
-            mId = id;
-            mIntent = intent;
-            mEntry = entry;
         }
 
         public int getId() {
@@ -1228,10 +1227,6 @@ public class ExpandingEntryCardView extends CardView {
 
         public Intent getIntent() {
             return mIntent;
-        }
-
-        public Entry getEntry() {
-            return mEntry;
         }
     }
 
